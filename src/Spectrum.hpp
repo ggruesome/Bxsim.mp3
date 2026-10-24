@@ -15,6 +15,7 @@ class Spectrum
 public:
     static constexpr std::size_t FftSize = 4096;      // ~93 ms at 44.1 kHz: good bass resolution
     static constexpr std::size_t WaveformSize = 1024;
+    static constexpr std::size_t StereoSize = 1600;   // ~36 ms of left/right audio for the XY scope
 
     explicit Spectrum(std::size_t bandCount = 96);
 
@@ -30,9 +31,17 @@ public:
 
     void setBandCount(std::size_t count);
 
+    // Reactivity settings.
+    void setSensitivity(float s) { m_sensitivity = s; }   // 1 = normal, higher = bars jump more
+    void setSmoothing(float s) { m_smoothing = s; }       // 0 = snappy, 1 = slow and floaty
+    void setKick(float k) { m_kick = k; }                 // how hard beats hit
+
     [[nodiscard]] const std::vector<float>& bands() const { return m_bands; }
     [[nodiscard]] const std::vector<float>& peaks() const { return m_peaks; }
     [[nodiscard]] const std::vector<float>& waveform() const { return m_wave; }
+    [[nodiscard]] const std::vector<float>& left() const { return m_left; }
+    [[nodiscard]] const std::vector<float>& right() const { return m_right; }
+    [[nodiscard]] float treble() const { return m_treble; }
     [[nodiscard]] float bass() const { return m_bass; }
     [[nodiscard]] float beat() const { return m_beat; }
     [[nodiscard]] float energy() const { return m_energy; }
@@ -56,6 +65,12 @@ private:
     std::vector<float> m_peakHold;                // seconds left before a cap starts falling
     std::vector<float> m_peakVelocity;
     std::vector<float> m_wave;
+    std::vector<float> m_left;
+    std::vector<float> m_right;
+    float m_treble = 0.f;
+    float m_sensitivity = 1.f;
+    float m_smoothing = 0.5f;
+    float m_kick = 1.f;
 
     float m_bass = 0.f;
     float m_bassAverage = 0.f;

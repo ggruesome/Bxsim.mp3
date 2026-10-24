@@ -32,6 +32,9 @@ add_executable(Bxsim
     src/Spectrum.cpp
     src/Renderer.cpp
     src/Platform.cpp
+    src/VideoWriter.cpp
+    src/Settings.cpp
+    src/SettingsPanel.cpp
 )
 target_include_directories(Bxsim PRIVATE src)
 target_link_libraries(Bxsim PRIVATE SFML::Graphics SFML::Audio)
@@ -39,7 +42,7 @@ target_link_libraries(Bxsim PRIVATE SFML::Graphics SFML::Audio)
 if(WIN32)
     # Release builds open without a console window; Debug keeps it for log output.
     set_target_properties(Bxsim PROPERTIES WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>)
-    target_link_libraries(Bxsim PRIVATE SFML::Main comdlg32 shell32)
+    target_link_libraries(Bxsim PRIVATE SFML::Main comdlg32 shell32 ole32 mfuuid) # Media Foundation DLLs are loaded at export time
     target_compile_definitions(Bxsim PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 endif()
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 #include <system_error>
 
@@ -27,19 +28,22 @@ std::string lower(std::string s)
 #ifdef _WIN32
 HWND g_dropWindow = nullptr;
 WNDPROC g_originalProc = nullptr;
-std::optional<fs::path> g_dropped;
+std::vector<fs::path> g_dropped;
 
 LRESULT CALLBACK dropProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_DROPFILES)
     {
         auto drop = reinterpret_cast<HDROP>(wParam);
-        const UINT length = DragQueryFileW(drop, 0, nullptr, 0);
-        if (length > 0)
+        const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+        for (UINT i = 0; i < count; ++i)
         {
+            const UINT length = DragQueryFileW(drop, i, nullptr, 0);
+            if (length == 0)
+                continue;
             std::wstring name(length, L'\0');
-            DragQueryFileW(drop, 0, name.data(), length + 1);
-            g_dropped = fs::path(name);
+            DragQueryFileW(drop, i, name.data(), length + 1);
+            g_dropped.emplace_back(name);
         }
         DragFinish(drop);
         return 0;
@@ -55,41 +59,77 @@ bool isAudioFile(const fs::path& path)
     return ext == ".mp3" || ext == ".wav" || ext == ".ogg" || ext == ".flac";
 }
 
-std::optional<fs::path> commandLineFile([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
+bool isImageFile(const fs::path& path)
 {
-#ifdef _WIN32
-    // Use the wide command line so song names with any characters work.
-    int count = 0;
-    LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
-    std::optional<fs::path> result;
-    if (args && count > 1)
-        result = fs::path(args[1]);
-    if (args)
-        LocalFree(args);
-    return result;
-#else
-    if (argc > 1)
-        return fs::path(argv[1]);
-    return std::nullopt;
-#endif
+    const std::string ext = lower(path.extension().u8string());
+    return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga" ||
+           ext == ".gif" || ext == ".psd" || ext == ".hdr";
 }
 
-std::optional<fs::path> openFileDialog([[maybe_unused]] sf::WindowHandle owner)
+std::vector<fs::path> commandLineFiles([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
+{
+    std::vector<fs::path> files;
+#ifdef _WIN32
+    // Use the wide command line so file names with any characters work.
+    int count = 0;
+    LPWSTR* args = CommandLineToArgvW(GetCommandLineW(), &count);
+    if (args)
+    {
+        for (int i = 1; i < count; ++i)
+            files.emplace_back(args[i]);
+        LocalFree(args);
+    }
+#else
+    for (int i = 1; i < argc; ++i)
+        files.emplace_back(argv[i]);
+#endif
+    return files;
+}
+
+std::optional<fs::path> openFileDialog([[maybe_unused]] sf::WindowHandle owner, [[maybe_unused]] FileKind kind)
 {
 #ifdef _WIN32
     wchar_t buffer[MAX_PATH * 4] = L"";
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Audio files (*.mp3, *.wav, *.ogg, *.flac)\0*.mp3;*.wav;*.ogg;*.flac\0All files\0*.*\0";
+    const bool image = kind == FileKind::Image;
+    ofn.lpstrFilter = image
+        ? L"Images (*.png, *.jpg, *.bmp, *.gif, *.tga)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tga;*.psd;*.hdr\0All files\0*.*\0"
+        : L"Audio files (*.mp3, *.wav, *.ogg, *.flac)\0*.mp3;*.wav;*.ogg;*.flac\0All files\0*.*\0";
     ofn.lpstrFile = buffer;
     ofn.nMaxFile = static_cast<DWORD>(std::size(buffer));
-    ofn.lpstrTitle = L"Open a song";
+    ofn.lpstrTitle = image ? L"Choose an image" : L"Open a song";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn))
         return fs::path(buffer);
 #endif
     return std::nullopt;
+}
+
+std::optional<fs::path> saveVideoDialog([[maybe_unused]] sf::WindowHandle owner,
+                                        [[maybe_unused]] const fs::path& suggestedName)
+{
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH * 4] = L"";
+    const std::wstring suggestion = suggestedName.wstring();
+    suggestion.copy(buffer, std::min<std::size_t>(suggestion.size(), std::size(buffer) - 1));
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"MP4 video (*.mp4)\0*.mp4\0";
+    ofn.lpstrFile = buffer;
+    ofn.nMaxFile = static_cast<DWORD>(std::size(buffer));
+    ofn.lpstrTitle = L"Export video";
+    ofn.lpstrDefExt = L"mp4";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameW(&ofn))
+        return fs::path(buffer);
+    return std::nullopt;
+#else
+    // No native dialog here: save next to the working directory.
+    return fs::current_path() / suggestedName;
+#endif
 }
 
 void enableFileDrop([[maybe_unused]] sf::WindowHandle window)
@@ -104,14 +144,22 @@ void enableFileDrop([[maybe_unused]] sf::WindowHandle window)
 #endif
 }
 
-std::optional<fs::path> takeDroppedFile()
+void maximizeWindow([[maybe_unused]] sf::WindowHandle window)
 {
 #ifdef _WIN32
-    auto result = g_dropped;
-    g_dropped.reset();
+    if (window)
+        ShowWindow(window, SW_MAXIMIZE);
+#endif
+}
+
+std::vector<fs::path> takeDroppedFiles()
+{
+#ifdef _WIN32
+    std::vector<fs::path> result;
+    result.swap(g_dropped);
     return result;
 #else
-    return std::nullopt;
+    return {};
 #endif
 }
 
@@ -132,6 +180,18 @@ std::vector<fs::path> fontCandidates()
     fonts.emplace_back("/usr/share/fonts/TTF/DejaVuSans.ttf");
 #endif
     return fonts;
+}
+
+fs::path settingsFile()
+{
+#ifdef _WIN32
+    if (const wchar_t* appData = _wgetenv(L"APPDATA"))
+        return fs::path(appData) / "Bxsim" / "settings.txt";
+#else
+    if (const char* home = std::getenv("HOME"))
+        return fs::path(home) / ".config" / "bxsim" / "settings.txt";
+#endif
+    return fs::path("bxsim-settings.txt");
 }
 
 std::optional<fs::path> siblingAudioFile(const fs::path& current, int direction)

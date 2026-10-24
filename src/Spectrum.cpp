@@ -49,6 +49,8 @@ Spectrum::Spectrum(std::size_t bandCount) : m_bandCount(bandCount)
     }
 
     m_wave.assign(WaveformSize, 0.f);
+    m_left.assign(StereoSize, 0.f);
+    m_right.assign(StereoSize, 0.f);
     setBandCount(bandCount);
 }
 
@@ -136,6 +138,21 @@ void Spectrum::update(const std::int16_t* samples,
         for (std::size_t i = 0; i < WaveformSize; ++i)
             m_wave[i] = monoAt(waveStart + static_cast<std::int64_t>(i));
 
+        // Separate left/right channels (mono files get the same signal on both).
+        const std::int64_t stereoStart = center - static_cast<std::int64_t>(StereoSize);
+        for (std::size_t i = 0; i < StereoSize; ++i)
+        {
+            const std::int64_t f = stereoStart + static_cast<std::int64_t>(i);
+            if (f < 0 || static_cast<std::uint64_t>(f) >= frameCount)
+            {
+                m_left[i] = m_right[i] = 0.f;
+                continue;
+            }
+            const std::int16_t* s = samples + static_cast<std::uint64_t>(f) * channels;
+            m_left[i] = static_cast<float>(s[0]) / 32768.f;
+            m_right[i] = static_cast<float>(s[channels > 1 ? 1 : 0]) / 32768.f;
+        }
+
         fft(m_buffer);
 
         // A full-scale sine through a Hann window peaks at FftSize/4.
@@ -175,7 +192,7 @@ void Spectrum::update(const std::int16_t* samples,
             }
 
             float db = 20.f * std::log10(mag + 1e-9f);
-            db += TiltDbPerOctave * std::log2(centerHz / 1000.f);
+            db += TiltDbPerOctave * std::log2(centerHz / 1000.f) + 20.f * std::log10(std::max(m_sensitivity, 0.01f));
             float v = std::clamp((db - FloorDb) / (CeilingDb - FloorDb), 0.f, 1.f);
             v = std::pow(v, 1.2f);
             target[b] = v;
@@ -191,15 +208,18 @@ void Spectrum::update(const std::int16_t* samples,
     }
     else
     {
-        for (float& w : m_wave)
-            w = smoothTowards(w, 0.f, 10.f, dt);
+        for (auto* buffer : {&m_wave, &m_left, &m_right})
+            for (float& w : *buffer)
+                w = smoothTowards(w, 0.f, 10.f, dt);
     }
 
     // Bars: snap up quickly, fall smoothly.
     float total = 0.f;
     for (std::size_t b = 0; b < m_bandCount; ++b)
     {
-        const float rate = target[b] > m_bands[b] ? 32.f : 7.f;
+        const float fall = 7.f * std::pow(4.f, 0.5f - m_smoothing);        // 14 snappy .. 3.5 floaty
+        const float rise = 32.f * std::pow(2.5f, 0.5f - m_smoothing);
+        const float rate = target[b] > m_bands[b] ? rise : fall;
         m_bands[b] = smoothTowards(m_bands[b], target[b], rate, dt);
         total += m_bands[b];
 
@@ -222,9 +242,15 @@ void Spectrum::update(const std::int16_t* samples,
     }
     m_energy = total / static_cast<float>(m_bandCount);
 
+    float high = 0.f;
+    const std::size_t highStart = m_bandCount * 2 / 3;
+    for (std::size_t b = highStart; b < m_bandCount; ++b)
+        high += m_bands[b];
+    m_treble = high / static_cast<float>(m_bandCount - highStart);
+
     // Bass + a simple beat detector (bass jumping above its recent average).
     m_bass = smoothTowards(m_bass, rawBass, rawBass > m_bass ? 30.f : 8.f, dt);
     m_bassAverage = smoothTowards(m_bassAverage, m_bass, 1.5f, dt);
-    const float kick = std::clamp((m_bass - m_bassAverage) * 4.f, 0.f, 1.f);
+    const float kick = std::clamp((m_bass - m_bassAverage) * 4.f * m_kick, 0.f, 1.f);
     m_beat = std::max(m_beat * std::exp(-6.f * dt), kick);
 }
