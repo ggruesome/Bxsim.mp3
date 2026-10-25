@@ -1,4 +1,5 @@
 #include "Renderer.hpp"
+#include "Platform.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1622,6 +1623,714 @@ void main()
 }
 )";
 
+// Hijack: the background of a hacked feed. A flowing neon field (or your picture, posterized)
+// printed as big halftone dots, spray-paint strokes, a faint pixel grid and datamosh blocks.
+constexpr const char* HijackShader = R"(
+uniform vec2 resolution;
+uniform float time;
+uniform float bass;
+uniform float beat;
+uniform float energy;
+uniform float palette;   // steps on big kicks: which neon color scheme
+uniform float dots;      // halftone size
+uniform sampler2D audio;
+uniform sampler2D image;
+uniform float hasImage;
+uniform vec2 fitScale;
+
+float h21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float band(float x) { return texture2D(audio, vec2(clamp(x, 0.0, 1.0), 0.25)).r; }
+
+vec3 neon(float t, float pal)
+{
+    vec3 a, b, c, d;
+    float k = mod(floor(pal), 3.0);
+    if (k < 0.5)      { a = vec3(0.05, 0.0, 0.09); b = vec3(1.0, 0.1, 0.6);  c = vec3(0.0, 0.88, 1.0); d = vec3(0.95, 1.0, 0.18); }
+    else if (k < 1.5) { a = vec3(0.0, 0.03, 0.07); b = vec3(0.55, 0.15, 1.0); c = vec3(1.0, 0.15, 0.45); d = vec3(0.25, 1.0, 0.6); }
+    else              { a = vec3(0.07, 0.0, 0.03); b = vec3(1.0, 0.33, 0.0);  c = vec3(1.0, 0.1, 0.7);  d = vec3(0.1, 0.95, 1.0); }
+    t = clamp(t, 0.0, 1.0);
+    if (t < 0.33) return mix(a, b, t / 0.33);
+    if (t < 0.66) return mix(b, c, (t - 0.33) / 0.33);
+    return mix(c, d, (t - 0.66) / 0.34);
+}
+
+vec2 picUv(vec2 q) { return vec2(0.5) + vec2(q.x, -q.y) * fitScale; }
+
+void main()
+{
+    vec2 frag = gl_FragCoord.xy;
+    vec2 uv = frag / resolution;
+    float aspect = resolution.x / resolution.y;
+    vec2 p = vec2((uv.x - 0.5) * aspect, uv.y - 0.5);
+
+    // Datamosh: a few chunky blocks get pixelated and slid around for a moment.
+    float tick = floor(time * 8.0);
+    vec2 blk = floor(p * 7.0);
+    vec2 q = p;
+    if (h21(blk + tick * 1.7) < 0.03 + 0.22 * beat)
+    {
+        float cs = 0.025 + 0.05 * h21(blk + 3.0);
+        q = (floor(p / cs) + 0.5) * cs + (vec2(h21(blk + tick), h21(blk - tick)) - 0.5) * 0.1 * (0.3 + beat);
+    }
+
+    // The flowing neon field.
+    float f = fbm(q * 1.5 + vec2(time * 0.06, -time * 0.045));
+    f = f * 1.05 + 0.25 * sin(q.x * 2.6 + q.y * 1.9 + time * 0.5) + 0.3 * bass - 0.05;
+    float tone = clamp(f, 0.0, 1.0);
+    float onPic = 0.0;
+    vec2 st = picUv(q);
+    if (hasImage > 0.5 && st.x > 0.0 && st.x < 1.0 && st.y > 0.0 && st.y < 1.0)
+    {
+        vec3 c = texture2D(image, st).rgb;
+        float l = dot(c, vec3(0.299, 0.587, 0.114));
+        float stepped = floor(l * 4.0 + 0.5) / 4.0;              // posterized into a few flat tones
+        tone = clamp(mix(l, stepped, 0.8) * (0.9 + 0.35 * bass), 0.0, 1.0);
+        onPic = 1.0;
+    }
+
+    // Halftone print: a rotated grid of dots that grow with the tone.
+    vec2 shifted = frag + (q - p) * resolution.y;
+    float cell = max(3.0, resolution.y * 0.012 * dots);
+    float ang = 0.52;
+    vec2 g = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * shifted / cell;
+    vec2 gc = fract(g) - 0.5;
+    float radius = sqrt(tone) * 0.66 + 0.05 * beat;
+    float aa = 1.2 / cell;
+    float dotMask = smoothstep(radius + aa, radius - aa, length(gc));
+    vec3 ink = neon(tone, palette);
+    vec3 col = neon(0.02, palette) + ink * (0.12 + 0.35 * onPic * tone);
+    col = mix(col, ink * (1.0 + 0.25 * beat), dotMask);
+
+    // Spray-paint strokes sweeping across, a little ragged at the edges.
+    for (int i = 0; i < 2; ++i)
+    {
+        float fi = float(i);
+        float y0 = 0.28 * sin(time * 0.13 + fi * 2.4) + (fi - 0.5) * 0.2;
+        float d = abs(p.y - y0 - 0.09 * sin(p.x * 2.2 + time * 0.4 + fi * 3.0));
+        d += 0.012 * noise(p * 55.0 + fi * 7.0);
+        float w = 0.018 + 0.03 * band(0.1 + 0.4 * fi) + 0.01 * bass;
+        float stroke = smoothstep(w, w - 0.006, d) * smoothstep(-0.2, 0.3, sin(p.x * 0.7 + time * 0.2 + fi * 4.0));
+        col = mix(col, neon(0.45 + 0.4 * fi, palette + 1.0) * 1.15, stroke * (1.0 - 0.5 * onPic));
+    }
+
+    // Faint pixel grid and scanlines.
+    vec2 gp = fract(frag / (resolution.y * 0.05));
+    float grid = step(0.965, max(gp.x, gp.y));
+    col += neon(0.7, palette) * grid * 0.05;
+    col *= 0.9 + 0.1 * sin(frag.y * 3.1416);
+    gl_FragColor = vec4(max(col, 0.0), 1.0);
+}
+)";
+
+// Hijack: tears up the finished frame (popups and text included): sliced rows, displaced blocks,
+// RGB split and noise lines that get worse on the beat, and an inverted flash on big hits.
+constexpr const char* HijackGlitchShader = R"(
+uniform sampler2D source;
+uniform vec2 resolution;
+uniform float seed;
+uniform float beat;
+uniform float amount;
+uniform float invert;
+float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main()
+{
+    vec2 uv = gl_TexCoord[0].xy;
+    float g = amount * (0.12 + beat);
+    float row = floor(uv.y * 46.0);
+    if (h(vec2(row, seed)) < 0.1 * g)
+        uv.x += (h(vec2(row, seed + 7.0)) - 0.5) * 0.16 * g;
+    vec2 b = floor(uv * vec2(14.0, 10.0));
+    float swap = 0.0;
+    if (h(b + seed * 3.1) < 0.045 * g)
+    {
+        uv += (vec2(h(b + seed), h(b - seed)) - 0.5) * 0.12;
+        swap = 1.0;
+    }
+    float split = 0.0012 + 0.009 * g;
+    vec3 col;
+    col.r = texture2D(source, uv + vec2(split, 0.0)).r;
+    col.g = texture2D(source, uv).g;
+    col.b = texture2D(source, uv - vec2(split, 0.0)).b;
+    if (swap > 0.5)
+        col = col.brg;
+    if (h(vec2(floor(uv.y * resolution.y * 0.5), seed)) > 1.0 - 0.008 * g)
+        col = mix(col, vec3(1.0), 0.65);
+    col = mix(col, 1.0 - col, invert);
+    gl_FragColor = vec4(col, 1.0);
+}
+)";
+
+// Rage: in the crowd at a rage show. Haze, red and white beams sweeping from the stage truss,
+// an LED wall at the back, rows of jumping silhouettes lit from behind, strobes and heavy grain.
+constexpr const char* RageShader = R"(
+uniform vec2 resolution;
+uniform float time;
+uniform float bass;
+uniform float beat;
+uniform float energy;
+uniform float strobe;      // 0..1 white strobe right now
+uniform float flash;       // 0..1 blown-out camera flash
+uniform float beamCount;
+uniform float crowd;       // crowd density
+uniform float faces;       // 1 = some of the crowd turn around with glowing faces
+uniform float grain;
+uniform float jump;        // crowd jump clock
+uniform float sweep;       // beam sweep clock
+uniform vec2 shake;
+uniform float zoom;
+uniform sampler2D audio;
+uniform sampler2D image;
+uniform float hasImage;
+uniform float imageAspect;
+
+float h11(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float h21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float band(float x) { return texture2D(audio, vec2(clamp(x, 0.0, 1.0), 0.25)).r; }
+mat2 rot(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
+
+float sdBox(vec2 p, vec2 b, float r) { vec2 d = abs(p) - b + r; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - r; }
+float sdSeg(vec2 p, vec2 a, vec2 b, float r)
+{
+    vec2 pa = p - a, ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - r;
+}
+
+// One person in a row. Everyone gets their own look from their seed: head size and shape, a
+// hairstyle (spikes, swinging dreads, a huge afro, a mohawk, a beanie, little horns, or bald),
+// body width, a long neck now and then, and a pose (hands up, devil horns, phone up, headbanging).
+// A few are turned around facing you with glowing eyes and a grin.
+// em: 0 = nothing glowing here, 1 = phone screen, 2 = glowing face.
+float person(vec2 p, float s, float seed, float lift, out float em)
+{
+    em = 0.0;
+    vec2 q = (p - vec2(0.0, lift)) / s;
+    float hs = 0.022 + 0.013 * h11(seed * 5.3);
+    float neck = h11(seed * 8.1) > 0.86 ? 0.04 : 0.0;
+    float bw = 0.032 + 0.024 * h11(seed * 2.9);
+    float bang = sin(jump * 2.0 + seed * 3.0) * 0.014 * step(0.62, h11(seed * 4.4));   // headbangers
+    vec2 hc = vec2(bang, 0.13 + neck + hs * 0.25);
+    float ov = 0.85 + 0.45 * h11(seed * 6.6);                                           // round to egg-shaped heads
+    float d = (length((q - hc) * vec2(1.0, 1.0 / ov)) - hs) * min(ov, 1.0);
+    if (neck > 0.0)
+        d = min(d, sdSeg(q, vec2(0.0, 0.1), hc, 0.008));
+    d = min(d, sdBox(q - vec2(0.0, 0.055), vec2(bw, 0.06), 0.02));
+    d = min(d, sdBox(q - vec2(0.0, -0.08), vec2(bw * 0.85, 0.09), 0.01));
+    vec2 top = hc + vec2(0.0, hs * ov);
+
+    float hair = floor(h11(seed * 9.7) * 7.0);
+    if (hair < 0.5)
+    {
+        for (int i = 0; i < 5; ++i)   // spikes
+        {
+            float a = -1.15 + 0.575 * float(i);
+            d = min(d, sdSeg(q, hc, hc + vec2(sin(a), cos(a)) * (hs * ov + 0.03 + 0.015 * h11(seed + float(i))), 0.0045));
+        }
+    }
+    else if (hair < 1.5)
+    {
+        for (int i = 0; i < 5; ++i)   // dreads that swing as they jump
+        {
+            float o = (float(i) - 2.0) * hs * 0.45;
+            vec2 a0 = hc + vec2(o, hs * 0.6);
+            vec2 a1 = hc + vec2(o * 1.9 + 0.022 * sin(jump * 1.7 + float(i) + seed), -hs - 0.035);
+            d = min(d, sdSeg(q, a0, a1, 0.0055));
+        }
+    }
+    else if (hair < 2.5)
+        d = min(d, length(q - hc - vec2(0.0, hs * 0.4)) - hs * 1.7);                   // huge afro
+    else if (hair < 3.5)
+        d = min(d, sdBox(q - top - vec2(0.0, 0.012), vec2(0.0055, 0.024), 0.003));     // mohawk
+    else if (hair < 4.5)
+    {
+        d = min(d, sdBox(q - hc - vec2(0.0, hs * 0.55), vec2(hs * 1.05, hs * 0.6), hs * 0.4));   // beanie
+        d = min(d, length(q - top - vec2(0.0, hs * 0.55)) - hs * 0.42);                         // with a pom
+    }
+    else if (hair < 5.5)
+    {
+        d = min(d, sdSeg(q, hc + vec2(-hs * 0.6, hs * 0.6), hc + vec2(-hs * 1.35, hs * 2.0), 0.0055));   // little horns
+        d = min(d, sdSeg(q, hc + vec2(hs * 0.6, hs * 0.6), hc + vec2(hs * 1.35, hs * 2.0), 0.0055));
+    }
+
+    // Arms and hands.
+    float pose = h11(seed * 3.1);
+    float sway = 0.014 * sin(jump * 1.3 + seed * 6.0);
+    float reach = 0.2 + 0.07 * h11(seed * 7.7);   // some have freakishly long arms
+    if (pose > 0.32)
+    {
+        vec2 hand = vec2(0.055 + sway, reach + 0.03 * bass);
+        d = min(d, sdSeg(q, vec2(0.03, 0.09), hand, 0.0085));
+        if (pose > 0.88)
+        {
+            float phone = sdBox(q - hand - vec2(0.0, 0.018), vec2(0.008, 0.014), 0.002);   // phone up, recording
+            d = min(d, phone);
+            if (phone < -0.0018)
+                em = 1.0;
+        }
+        else if (pose > 0.7)
+        {
+            d = min(d, sdSeg(q, hand, hand + vec2(-0.009, 0.024), 0.0032));   // devil horns
+            d = min(d, sdSeg(q, hand, hand + vec2(0.009, 0.024), 0.0032));
+        }
+    }
+    if (pose > 0.55 && pose <= 0.88)
+        d = min(d, sdSeg(q, vec2(-0.03, 0.09), vec2(-0.06 - sway, reach - 0.01), 0.0085));
+
+    // Turned around facing you: glowing eyes and a big grin.
+    if (faces > 0.5 && h11(seed * 12.9) > 0.85 && length((q - hc) * vec2(1.0, 1.0 / ov)) < hs)
+    {
+        vec2 e = (q - hc) / vec2(hs, hs * ov);
+        float big = 0.2 + 0.1 * h11(seed * 14.1);                     // mismatched eyes
+        float eyes = min(length((e - vec2(-0.38, 0.18)) * vec2(1.0, 0.8)) - big,
+                         length((e - vec2(0.38, 0.18)) * vec2(1.0, 0.8)) - (0.42 - big));
+        float grin = max(abs(length(e - vec2(0.0, 0.35)) - 0.66) - 0.09, e.y + 0.05);
+        float teeth = step(fract(e.x * 5.0 + 0.5), 0.18);
+        if (eyes < 0.0 || (grin < 0.0 && teeth < 0.5))
+            em = 2.0;
+    }
+    return d * s;
+}
+
+void main()
+{
+    vec2 frag = gl_FragCoord.xy;
+    vec2 p = (frag - 0.5 * resolution) / resolution.y;
+    p = rot(0.025 * sin(time * 0.6) + shake.x * 0.6) * (p / zoom) + shake;   // handheld camera
+
+    float haze = fbm(p * 2.2 + vec2(time * 0.05, time * 0.02));
+    vec3 red = vec3(1.0, 0.07, 0.04);
+    vec3 col = vec3(0.012, 0.004, 0.004) + red * 0.03 * haze;
+
+    // LED wall at the back of the stage.
+    vec2 wallC = vec2(0.0, 0.12);
+    vec2 wallH = vec2(0.46, 0.2);
+    if (hasImage > 0.5)
+    {
+        float wallAspect = wallH.x / wallH.y;
+        wallH = imageAspect > wallAspect ? vec2(wallH.x, wallH.x / imageAspect) : vec2(wallH.y * imageAspect, wallH.y);
+    }
+    vec2 wq = (p - wallC) / wallH;
+    if (abs(wq.x) < 1.0 && abs(wq.y) < 1.0)
+    {
+        vec2 cells = vec2(64.0, 64.0 * wallH.y / wallH.x);
+        vec2 cell = floor((wq * 0.5 + 0.5) * cells);
+        vec2 cuv = (cell + 0.5) / cells;
+        vec3 led;
+        if (hasImage > 0.5)
+        {
+            vec3 c = texture2D(image, vec2(cuv.x, 1.0 - cuv.y)).rgb;
+            float l = dot(c, vec3(0.299, 0.587, 0.114));
+            led = mix(red * l * 1.6, vec3(1.0, 0.85, 0.8) * l, smoothstep(0.6, 1.0, l)) * (0.6 + 0.8 * bass);
+        }
+        else
+        {
+            // Huge pulsing bars from the spectrum.
+            float v = band(abs(cuv.x - 0.5) * 1.8);
+            float bar = step(cuv.y, 0.1 + v * 0.85);
+            float ring = smoothstep(0.08, 0.0, abs(length((cuv - 0.5) * vec2(wallH.x / wallH.y, 1.0)) - fract(time * 0.5) * 1.2));
+            led = red * (bar * 0.9 + ring * 0.6 * energy) + vec3(1.0) * bar * step(0.92, cuv.y + 0.85 - v * 0.85) * 0.4;
+        }
+        vec2 pix = fract((wq * 0.5 + 0.5) * cells) - 0.5;
+        led *= smoothstep(0.5, 0.3, max(abs(pix.x), abs(pix.y)));   // gaps between LEDs
+        col = mix(col, led, 0.95);
+    }
+    // Stage deck below the wall, catching the light.
+    float deck = smoothstep(0.004, 0.0, abs(p.y + 0.11) - 0.012) * step(abs(p.x), 0.75);
+    col += red * deck * (0.25 + 0.6 * bass);
+
+    // Truss across the top with beams fanning out of it.
+    float trussY = 0.39;
+    col = mix(col, vec3(0.02), smoothstep(0.012, 0.006, abs(p.y - trussY)));
+    vec3 beamLight = vec3(0.0);
+    int n = int(beamCount);
+    for (int i = 0; i < 14; ++i)
+    {
+        if (i >= n)
+            break;
+        float fi = float(i);
+        float t = n > 1 ? fi / float(n - 1) : 0.5;
+        vec2 src = vec2(mix(-0.72, 0.72, t), trussY);
+        float down = mod(fi, 2.0);
+        float base = down > 0.5 ? -1.5708 : 1.5708;
+        float ang = base + (t - 0.5) * (down > 0.5 ? 1.2 : -1.6) + 0.55 * sin(sweep * (0.6 + 0.25 * h11(fi)) + fi * 1.7);
+        vec2 dir = vec2(cos(ang), sin(ang));
+        vec2 rel = p - src;
+        float along = dot(rel, dir);
+        float across = abs(dot(rel, vec2(-dir.y, dir.x)));
+        float width = 0.004 + along * 0.07;
+        float level = 0.35 + 1.8 * band(0.04 + 0.85 * t);
+        float b = along > 0.0 ? smoothstep(width, 0.0, across) * exp(-along * 0.9) : 0.0;
+        b *= 0.6 + 1.4 * haze;
+        vec3 c = mod(fi, 3.0) < 0.5 ? vec3(1.0, 0.92, 0.88) : red;
+        beamLight += c * b * level;
+        beamLight += c * level * 0.012 / (dot(rel, rel) * 400.0 + 0.02);   // the fixture's hot spot
+    }
+    col += beamLight;
+    col = mix(col, vec3(1.0, 0.97, 0.95), strobe * 0.9);
+
+    // Stage light bleeding through the haze just above the crowd.
+    col += red * (0.18 + 0.5 * bass + 0.4 * strobe) * exp(-abs(p.y + 0.08) * 9.0) * (0.5 + haze);
+
+    // The crowd, back row first, each row in front of the last.
+    float backlight = 0.5 + 1.6 * bass + 2.0 * strobe;
+    for (int r = 0; r < 4; ++r)
+    {
+        float fr = float(r);
+        float s = 0.5 + fr * 0.36;
+        float baseY = -0.13 - fr * 0.12 - fr * fr * 0.03;
+        float spacing = 0.1 * s / max(crowd, 0.2);
+        float offset = h11(fr + 4.0) * spacing;
+        float idx = floor((p.x - offset) / spacing);
+        float rimW = 0.007 * s;
+        float best = 1e5;
+        float em = 0.0;
+        vec2 bq = vec2(0.0);
+        float bsc = s, bseed = 0.0, blift = 0.0;
+        for (int k = -1; k <= 1; ++k)
+        {
+            float id = idx + float(k);
+            float seed = id * 7.13 + fr * 31.0;
+            float x = offset + (id + 0.5) * spacing + (h11(seed) - 0.5) * spacing * 0.5;
+            float sc = s * (0.8 + 0.4 * h11(seed + 1.0));
+            float lift = max(0.0, sin(jump + h11(seed + 2.0) * 6.2832)) * 0.035 * s * (0.25 + 1.2 * bass);
+            vec2 q = p - vec2(x, baseY);
+            float e;
+            float dd = person(q, sc, seed, lift, e);
+            if (dd < best)
+            {
+                best = dd;
+                em = e;
+                bq = q;
+                bsc = sc;
+                bseed = seed;
+                blift = lift;
+            }
+        }
+        if (r == 1)
+        {
+            // Now and then someone crowd-surfs across over everyone's hands.
+            float sx = mod(time * 0.11, 4.0) - 2.0;
+            vec2 q = p - vec2(sx, baseY + 0.23 * s + 0.01 * sin(time * 3.0));
+            float a = 1.45 + 0.12 * sin(time * 1.7);
+            q = mat2(cos(a), -sin(a), sin(a), cos(a)) * q;
+            float e;
+            float dd = person(q, s, 777.0, 0.0, e);
+            if (dd < best)
+            {
+                best = dd;
+                em = e;
+                bq = q;
+                bsc = s;
+                bseed = 777.0;
+                blift = 0.0;
+            }
+        }
+        if (best < 0.0)
+        {
+            float e2;
+            float above = person(bq + vec2(0.0, rimW), bsc, bseed, blift, e2);   // is light from above reaching this edge?
+            float depth = 1.0 - fr / 3.0;   // 1 at the back, 0 at the front
+            vec3 body = mix(vec3(0.004, 0.0, 0.0), vec3(0.09, 0.015, 0.012) + red * 0.08 * haze, 0.45 * depth);
+            float rim = clamp(above / rimW, 0.0, 1.0);
+            rim = max(rim, 0.25 * smoothstep(-0.004 * s, 0.0, best));
+            col = body + (red * 0.9 + vec3(0.45) * strobe) * rim * backlight * (0.35 + 0.65 * depth);
+            if (em > 1.5)
+                col = mix(vec3(1.0, 0.95, 0.85), vec3(0.6, 1.0, 0.9), step(0.5, h11(bseed * 2.2))) * (0.9 + 0.8 * bass + 0.6 * beat);
+            else if (em > 0.5)
+                col = vec3(0.55, 0.7, 1.0) * (0.9 + 0.3 * sin(time * 9.0 + bseed));
+        }
+    }
+    // Light through the haze in front of everyone.
+    col += beamLight * 0.12 * (0.6 + haze);
+
+    // Camera: blown-out flash, crushed blacks, red grade, heavy grain, vignette.
+    col *= 1.0 + flash * 3.0;
+    col = mix(col, vec3(1.0, 0.95, 0.92), flash * 0.6);
+    col = max(col - 0.004, 0.0);
+    col = col / (1.0 + col * 0.35);
+    col = pow(col, vec3(0.95, 1.05, 1.08));
+    float g = h21(frag + fract(time * 13.7) * 97.0) - 0.5;
+    col += g * grain * (0.09 + 0.08 * beat);
+    vec2 uv = frag / resolution - 0.5;
+    col *= 1.0 - dot(uv, uv) * 1.5;
+    gl_FragColor = vec4(max(col, 0.0), 1.0);
+}
+)";
+
+// Dystopia: flying slowly down a canyon of colossal black megacity towers in glowing smog. Window
+// lights and light strips pulse with the music, warning lights blink on the rooftops, giant cold
+// screens hang on the towers, and a colossal monolith with a glowing core stands on the horizon.
+constexpr const char* DystopiaShader = R"(
+uniform vec2 resolution;
+uniform float time;
+uniform float travel;
+uniform float bass;
+uniform float beat;
+uniform float energy;
+uniform float blink;       // rooftop lights flashing together on the beat
+uniform float flash;       // red flash on the biggest hits
+uniform float lights;      // window glow setting
+uniform float fogAmount;
+uniform float screens;
+uniform vec2 sway;         // camera drift (x, y)
+uniform float kickAge;     // seconds since the last kick (light waves run up the towers)
+uniform sampler2D audio;
+uniform sampler2D image;
+uniform float hasImage;
+uniform float imageAspect;
+
+const vec2 CELL = vec2(11.0, 16.0);
+uniform vec3 mainCol;     // the color scheme: main glow
+uniform vec3 altCol;      // second, cold color
+uniform vec3 warnCol;     // warning lights
+uniform float smogK;      // how strongly the smog takes the main color
+
+float h11(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+float h21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float band(float x) { return texture2D(audio, vec2(clamp(x, 0.0, 1.0), 0.25)).r; }
+
+// The tower in a grid cell: center, half size, body height, crown height. h < 0 = no tower (the canyon).
+void tower(vec2 cell, out vec2 c, out vec2 hs, out float h, out float h2, out float id)
+{
+    id = h21(cell);
+    vec2 jit = (vec2(h21(cell + 1.3), h21(cell + 2.7)) - 0.5) * CELL * 0.1;
+    c = (cell + 0.5) * CELL + jit;
+    hs = vec2(2.8 + 1.6 * h21(cell + 4.1), 3.5 + 3.2 * h21(cell + 5.9));
+    h = 22.0 + 105.0 * pow(h21(cell + 7.7), 1.4);
+    h2 = h + 6.0 + 22.0 * h21(cell + 9.2);
+    if (abs(c.x) < 7.0)
+        h = -1.0;
+}
+
+float boxD(vec3 p, vec3 b)
+{
+    vec3 q = abs(p) - b;
+    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+float towerD(vec3 p, vec2 cell)
+{
+    vec2 c, hs;
+    float h, h2, id;
+    tower(cell, c, hs, h, h2, id);
+    if (h < 0.0)
+        return 1e5;
+    vec3 q = p - vec3(c.x, 0.0, c.y);
+    float d = boxD(q - vec3(0.0, (h - 400.0) * 0.5, 0.0), vec3(hs.x, (h + 400.0) * 0.5, hs.y));
+    d = min(d, boxD(q - vec3(0.0, (h + h2) * 0.5, 0.0), vec3(hs.x * 0.62, (h2 - h) * 0.5, hs.y * 0.62)));
+    float ay = clamp(q.y, h2, h2 + 10.0);
+    d = min(d, length(vec3(q.x, q.y - ay, q.z)) - 0.18);   // antenna
+    return d;
+}
+
+vec3 skyCol(vec3 rd)
+{
+    vec3 c = mix(mainCol * 0.34 * smogK, vec3(0.006, 0.007, 0.009), smoothstep(-0.05, 0.5, rd.y));
+    c = mix(mainCol * 0.53 * smogK, c, smoothstep(-0.45, -0.02, rd.y));   // the city glowing below
+    return c * (1.0 + 0.6 * bass);
+}
+
+// Everything far away: the smog, the colossal monolith and the searchlights.
+vec3 farView(vec3 rd)
+{
+    vec3 col = skyCol(rd);
+    // Smog lit from below.
+    vec2 cp = rd.xz / max(rd.y + 0.25, 0.05) * 2.0 + vec2(0.0, travel * 0.004 + time * 0.01);
+    float smog = fbm(cp);
+    col += mainCol * 0.12 * smogK * smog * smoothstep(0.6, 0.0, rd.y);
+
+    // The colossal monolith far away on the horizon.
+    float ax = atan(rd.x, rd.z) - 0.04;
+    float ay = rd.y;
+    float w = 0.07 + 0.04 * smoothstep(0.62, -0.1, ay);
+    if (abs(ax) < w && ay < 0.65 && ay > -0.12)
+    {
+        vec3 m = vec3(0.005, 0.006, 0.007);
+        m += mainCol * 0.5 * step(fract(ay * 45.0), 0.08) * step(abs(ax), w - 0.006) * (0.4 + bass);
+        m += altCol * 0.8 * smoothstep(0.004, 0.0, abs(abs(ax) - w + 0.002));   // edge lights
+        col = mix(m, col, 0.3 + 0.7 * smoothstep(0.02, -0.12, ay));   // its base sinks into the haze
+    }
+    float core = length(vec2(ax, (ay - 0.27) * 1.6));
+    col += mainCol * (0.6 + 2.2 * bass + 1.5 * beat) * smoothstep(0.03, 0.0, abs(core - 0.075)) * step(abs(ax), w + 0.04);
+    col += mainCol * (0.25 + bass) * 0.05 / (core * core * 40.0 + 0.05);
+    col += warnCol * 3.0 * max(step(0.5, fract(time * 0.5)), blink) * smoothstep(0.006, 0.0, length(vec2(ax, ay - 0.67)));
+
+    // Searchlights sweeping up out of the city.
+    for (int i = 0; i < 4; ++i)
+    {
+        float fi = float(i);
+        vec2 base = vec2(-0.9 + fi * 0.6 + 0.1 * sin(fi * 3.0), -0.08);
+        float ang = 1.5708 + 0.5 * sin(time * (0.15 + 0.05 * fi) + fi * 2.0);
+        vec2 dir = vec2(cos(ang), sin(ang));
+        vec2 rel = vec2(ax, ay) - base;
+        float along = dot(rel, dir);
+        float across = abs(dot(rel, vec2(-dir.y, dir.x)));
+        float beam = along > 0.0 ? smoothstep(0.004 + along * 0.05, 0.0, across) * exp(-along * 1.5) : 0.0;
+        col += mix(altCol * 0.8, mainCol, step(0.5, h11(fi))) * beam * (0.18 + 0.4 * energy);
+    }
+    return col;
+}
+
+void main()
+{
+    vec2 frag = gl_FragCoord.xy;
+    vec2 sp = (frag - 0.5 * resolution) / resolution.y;
+
+    vec3 ro = vec3(sway.x, 34.0 + sway.y, travel);
+    float yaw = 0.06 * sin(time * 0.05) + sway.x * 0.012;
+    float pitch = 0.1;
+    vec3 fwd = normalize(vec3(sin(yaw), pitch, cos(yaw)));
+    float roll = -sway.x * 0.01;
+    vec3 right = normalize(cross(vec3(sin(roll), cos(roll), 0.0), fwd));
+    vec3 up = cross(fwd, right);
+    vec3 rd = normalize(fwd * 1.15 + right * sp.x + up * sp.y);
+
+    // March, stepping cell by cell so nothing gets skipped.
+    vec2 invD = 1.0 / max(abs(rd.xz), vec2(1e-4));
+    vec2 dirSign = sign(rd.xz) + step(rd.xz, vec2(0.0)) * step(vec2(0.0), rd.xz);
+    float t = 0.2;
+    bool hit = false;
+    vec2 hitCell = vec2(0.0);
+    vec2 lastCell = vec2(1e5);
+    vec3 glow = vec3(0.0);
+    for (int i = 0; i < 120; ++i)
+    {
+        vec3 p = ro + rd * t;
+        vec2 cell = floor(p.xz / CELL);
+        if (cell != lastCell)
+        {
+            // Rooftop warning light of this cell's tower, glowing in the smog.
+            lastCell = cell;
+            vec2 c, hs;
+            float h, h2, id;
+            tower(cell, c, hs, h, h2, id);
+            if (h > 0.0)
+            {
+                vec3 L = vec3(c.x, h2 + 10.0, c.y);
+                float s = dot(L - ro, rd);
+                if (s > 0.0)
+                {
+                    float dm = length(ro + rd * s - L);
+                    float on = max(step(0.55, fract(time * 0.7 + id)) * 0.7, blink);
+                    glow += warnCol * on * 0.05 / (dm * dm * 0.2 + 0.003 * s + 0.01) * exp(-s * 0.006 * fogAmount);
+                }
+            }
+        }
+        float d = towerD(p, cell);
+        if (d < 0.002 * t)
+        {
+            hit = true;
+            hitCell = cell;
+            break;
+        }
+        vec2 wall = (cell + step(0.0, dirSign)) * CELL;
+        vec2 exitT = abs(wall - p.xz) * invD;
+        t += min(d, min(exitT.x, exitT.y) + 0.02);
+        if (t > 320.0)
+            break;
+    }
+
+    vec3 col;
+    if (hit)
+    {
+        vec3 p = ro + rd * t;
+        vec2 e = vec2(0.01, 0.0);
+        vec3 n = normalize(vec3(towerD(p + e.xyy, hitCell) - towerD(p - e.xyy, hitCell),
+                                towerD(p + e.yxy, hitCell) - towerD(p - e.yxy, hitCell),
+                                towerD(p + e.yyx, hitCell) - towerD(p - e.yyx, hitCell)));
+        vec2 c, hs;
+        float h, h2, id;
+        tower(hitCell, c, hs, h, h2, id);
+        vec3 q = p - vec3(c.x, 0.0, c.y);
+
+        // Black glass and metal that reflects the red smog.
+        vec3 r = reflect(rd, n);
+        float fres = pow(1.0 - max(dot(-rd, n), 0.0), 3.0);
+        col = vec3(0.012, 0.012, 0.016) + skyCol(r) * (0.12 + 0.55 * fres);
+        col += mainCol * 0.12 * smogK * exp(-max(p.y + 10.0, 0.0) / 45.0);   // underglow from the city below
+
+        if (abs(n.y) < 0.5 && q.y < h2)
+        {
+            float u = abs(n.x) > 0.5 ? q.z : q.x;
+            // Windows: most dark, some red, a few cold white, pulsing with this tower's part of the spectrum.
+            vec2 wc = vec2(u * 2.2, q.y * 1.5);
+            vec2 wcell = floor(wc);
+            vec2 wf = fract(wc);
+            float win = step(0.18, wf.x) * step(wf.x, 0.72) * step(0.3, wf.y) * step(wf.y, 0.78);
+            // Each tower section listens to its own part of the spectrum: louder means more windows
+            // switch on and they burn brighter. On every kick a wave of light runs up the towers.
+            float level = band(0.04 + 0.85 * fract(id * 7.31 + floor(q.y / 30.0) * 0.17));
+            float on = step(h21(wcell + id * 91.0), (0.04 + 0.32 * level + 0.08 * beat) * lights);
+            float pulse = 0.25 + 2.8 * level + 1.2 * beat;
+            float front = kickAge * (90.0 + 40.0 * id);
+            float wave = smoothstep(7.0, 0.0, abs(q.y + 20.0 - front)) * exp(-kickAge * 1.6) * step(h21(wcell + id * 17.0), 0.55);
+            pulse = on * pulse + wave * 2.5;
+            on = 1.0;
+            float wk = h21(wcell + id * 3.0);
+            vec3 wcol = wk < 0.6 ? mainCol * 1.2 : (wk < 0.88 ? altCol : vec3(0.85, 0.9, 1.0));
+            col += wcol * win * on * pulse * min(lights, 1.5);
+            // Bright strips wrapping the tower every few floors.
+            float strip = step(fract(q.y / 26.0 + id), 0.012);
+            col += mainCol * 2.2 * strip * (0.12 + 2.4 * bass + 2.0 * beat) * min(lights, 1.5);
+
+            // Giant screens on towers facing the canyon.
+            if (screens > 0.5 && h21(hitCell + 11.0) < 0.4 && abs(n.x) > 0.5 && n.x * c.x < 0.0)
+            {
+                float sh = 20.0 + 10.0 * h21(hitCell + 13.0);
+                float sw = hs.y * 0.85;
+                float sy0 = min(h * 0.4 + 8.0 * h21(hitCell + 12.0), h - sh - 2.0);
+                vec2 suv = vec2(q.z / sw * 0.5 + 0.5, (q.y - sy0) / sh);
+                if (n.x > 0.0)
+                    suv.x = 1.0 - suv.x;
+                if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0)
+                {
+                    vec3 sc;
+                    if (hasImage > 0.5)
+                    {
+                        // The picture is stretched to fill the whole screen.
+                        vec3 ic = texture2D(image, vec2(suv.x, 1.0 - suv.y)).rgb;
+                        float l = dot(ic, vec3(0.299, 0.587, 0.114));
+                        sc = mix(mainCol * l * 1.4, vec3(0.9, 0.95, 1.0) * l, smoothstep(0.55, 1.0, l));
+                    }
+                    else
+                    {
+                        // Cold corporate feed: rows of glyphs scrolling over a pulsing bar graph.
+                        float row = floor(suv.y * 12.0);
+                        float colm = floor(suv.x * 26.0);
+                        float glyph = step(h21(vec2(colm, row - floor(time * 1.5 + id * 9.0))), 0.45)
+                                    * step(fract(suv.x * 26.0), 0.7) * step(fract(suv.y * 12.0), 0.6);
+                        float bars = step(suv.y, band(suv.x * 0.9) * 0.8) * step(fract(suv.x * 40.0), 0.75);
+                        float frameLine = step(min(min(suv.x, 1.0 - suv.x), min(suv.y, 1.0 - suv.y)), 0.02);
+                        sc = altCol * glyph * 0.6 * step(0.45, suv.y) + mainCol * bars * 1.4 + vec3(0.8, 0.9, 1.0) * frameLine;
+                    }
+                    float scan = 0.85 + 0.15 * sin(suv.y * 300.0 + time * 8.0);
+                    col = sc * scan * (1.1 + 0.5 * beat) + vec3(0.01);
+                }
+            }
+        }
+        // Rooftop light itself.
+        float onTop = max(step(0.55, fract(time * 0.7 + id)) * 0.7, blink);
+        col += warnCol * 6.0 * onTop * smoothstep(0.6, 0.0, length(q - vec3(0.0, h2 + 10.0, 0.0)));
+
+        // Smog swallows distant towers; the monolith stays visible through it as a giant silhouette.
+        float fog = 1.0 - exp(-t * 0.011 * fogAmount);
+        col = mix(col, mix(skyCol(rd), farView(rd), fog * fog) * 0.92, fog);
+    }
+    else
+        col = farView(rd);
+    col += glow;
+
+    // Red flash on the biggest hits, grain, vignette.
+    col += mainCol * flash * 0.35;
+    col = col / (1.0 + col * 0.25);
+    float g = h21(frag + fract(time * 11.3) * 91.0) - 0.5;
+    col += g * 0.035;
+    vec2 uv = frag / resolution - 0.5;
+    col *= 1.0 - dot(uv, uv) * 1.3;
+    gl_FragColor = vec4(max(col, 0.0), 1.0);
+}
+)";
+
 // Draws a layer (bats, lightning) only where the 3D scene shows open sky.
 constexpr const char* SkyMaskShader = R"(
 uniform sampler2D source;
@@ -2119,6 +2828,9 @@ const char* modeName(Mode mode)
         case Mode::Pop: return "Pop";
         case Mode::NightDrive: return "Night Drive";
         case Mode::DarkForest: return "Dark Forest";
+        case Mode::Hijack: return "Hijack";
+        case Mode::Rage: return "Rage";
+        case Mode::Dystopia: return "Dystopia";
         default: return "";
     }
 }
@@ -2161,6 +2873,10 @@ void Renderer::compileShaders(const std::function<void(float, const char*)>& pro
         {&m_skyMask, SkyMaskShader, "Sky", 1},
         {&m_drive, DriveShader, "Night Drive", 1},
         {&m_forest, ForestShader, "Dark Forest", 1},
+        {&m_hijackBg, std::string(ShaderCommon) + HijackShader, "Hijack", 1},
+        {&m_hijackGlitch, HijackGlitchShader, "Hijack glitch", 1},
+        {&m_rage, std::string(ShaderCommon) + RageShader, "Rage", 1},
+        {&m_dystopia, std::string(ShaderCommon) + DystopiaShader, "Dystopia", 1},
         {&m_filterShader, FilterShader, "Filters", 2},
     };
     const bool available = sf::Shader::isAvailable();
@@ -2492,7 +3208,7 @@ void Renderer::draw(sf::RenderTarget& window, const Spectrum& spectrum, Mode mod
 
     const bool shaderMode = mode == Mode::XYScope || mode == Mode::Tunnel || mode == Mode::Liquid ||
                             mode == Mode::Oscilloscope || mode == Mode::DarkFantasy || mode == Mode::Pop ||
-                            mode == Mode::NightDrive || mode == Mode::DarkForest;
+                            mode == Mode::NightDrive || mode == Mode::DarkForest || mode == Mode::Hijack || mode == Mode::Rage || mode == Mode::Dystopia;
     if (shaderMode && !m_trippyReady)
         mode = Mode::Bars; // graphics card can't run the shaders
 
@@ -2508,7 +3224,7 @@ void Renderer::draw(sf::RenderTarget& window, const Spectrum& spectrum, Mode mod
     m_flow += dt * (0.35f + spectrum.energy() * 1.6f + spectrum.beat() * 2.f) * (mode == Mode::Liquid ? cfg("liquid.speed") : 1.f);
     if (m_hasImage)
         m_imageAge += dt;
-    if (m_hasImage || mode == Mode::DarkFantasy || mode == Mode::NightDrive)
+    if (m_hasImage || mode == Mode::DarkFantasy || mode == Mode::NightDrive || mode == Mode::Hijack || mode == Mode::Rage || mode == Mode::Dystopia)
         updateAudioTexture(spectrum);
 
     // 1) The glowing part goes into an offscreen texture, drawn additively.
@@ -2531,6 +3247,18 @@ void Renderer::draw(sf::RenderTarget& window, const Spectrum& spectrum, Mode mod
             m_scene.draw(verts, sf::RenderStates(sf::BlendAdd));
             break;
         }
+        case Mode::Dystopia:
+            drawDystopia(spectrum, dt);
+            bloom = 0.8f + spectrum.beat() * 0.35f + m_dysFlash * 0.3f;
+            break;
+        case Mode::Rage:
+            drawRage(spectrum, dt);
+            bloom = 0.7f + spectrum.beat() * 0.5f + m_rageStrobe * 0.4f;
+            break;
+        case Mode::Hijack:
+            drawHijack(spectrum, dt, ui);
+            bloom = 0.3f + spectrum.beat() * 0.3f;
+            break;
         case Mode::DarkForest:
             drawDarkForest(spectrum, dt);
             bloom = 0.35f + spectrum.beat() * 0.15f;
@@ -2576,13 +3304,13 @@ void Renderer::draw(sf::RenderTarget& window, const Spectrum& spectrum, Mode mod
     sf::RenderTarget& out = filtering ? static_cast<sf::RenderTarget&>(m_post) : window;
     sf::Sprite sceneSprite(m_scene.getTexture());
     if (mode == Mode::Liquid || mode == Mode::Oscilloscope || mode == Mode::DarkFantasy || mode == Mode::Pop ||
-        mode == Mode::NightDrive || mode == Mode::DarkForest)
+        mode == Mode::NightDrive || mode == Mode::DarkForest || mode == Mode::Hijack || mode == Mode::Rage || mode == Mode::Dystopia)
     {
         // These two own the whole screen and get a CRT-style finish.
         const bool scope = mode == Mode::Oscilloscope;
         m_finish.setUniform("source", sf::Shader::CurrentTexture);
         m_finish.setUniform("time", m_time);
-        m_finish.setUniform("scanlines", scope ? 0.14f : (mode == Mode::DarkFantasy || mode == Mode::Pop || mode == Mode::NightDrive || mode == Mode::DarkForest ? 0.f : 0.08f));
+        m_finish.setUniform("scanlines", scope ? 0.14f : (mode == Mode::DarkFantasy || mode == Mode::Pop || mode == Mode::NightDrive || mode == Mode::DarkForest || mode == Mode::Rage || mode == Mode::Dystopia ? 0.f : (mode == Mode::Hijack ? 0.05f : 0.08f)));
         m_finish.setUniform("grain", mode == Mode::Pop ? 0.f : (scope ? 0.02f : 0.025f));
         m_finish.setUniform("base", scope ? sf::Glsl::Vec3{0.f, 0.035f, 0.014f} : sf::Glsl::Vec3{0.f, 0.f, 0.f});
         out.draw(sceneSprite, sf::RenderStates(&m_finish));
@@ -3029,6 +3757,1061 @@ void Renderer::drawDarkForest(const Spectrum& spectrum, float dt)
     sf::Sprite frame(m_forestTarget.getTexture());
     frame.setScale({m_size.x / size.x, m_size.y / size.y});
     m_scene.draw(frame);
+}
+
+namespace
+{
+// Pixel-art stickers, 12x12: '#' = sticker color, 'k' = black, 'w' = white, '.' = empty.
+constexpr int HackIconCount = 10;
+const char* const HackIcons[HackIconCount][12] = {
+    {"...######...", ".##########.", ".##########.", "###kk##kk###", "###kk##kk###", "############",
+     "############", "##k######k##", "###k####k###", ".###kkkk###.", ".##########.", "...######..."},   // smiley
+    {"...######...", ".##########.", ".#k#k##k#k#.", "###k####k###", "##k#k##k#k##", "############",
+     "############", "############", "###kkkkkk###", ".##########.", ".##########.", "...######..."},   // knocked out
+    {"............", ".###....###.", "#####..#####", "#ww#########", "#w##########", "############",
+     ".##########.", "..########..", "...######...", "....####....", ".....##.....", "............"},   // heart
+    {"......####..", ".....####...", "....####....", "...####.....", "..########..", ".#########..",
+     "....####....", "...####.....", "..####......", "..###.......", ".##.........", ".#.........."},   // bolt
+    {"............", "............", "....####....", "..##wwww##..", ".#wwwkkwww#.", "#wwwkkkkwww#",
+     "#wwwkkkkwww#", ".#wwwkkwww#.", "..##wwww##..", "....####....", "............", "............"},   // eye
+    {"k...........", "kk..........", "k#k.........", "k##k........", "k###k.......", "k####k......",
+     "k#####k.....", "k######k....", "k####kkkk...", "k#kk#k......", "kk..k#k.....", ".....kk....."},   // cursor
+    {"##########..", "#kk####kk##.", "#kk####kk###", "#kkkkkkkk###", "############", "############",
+     "#wwwwwwwwww#", "#wkkkkkkkkw#", "#wwwwwwwwww#", "#wkkkkkkkkw#", "#wwwwwwwwww#", "############"},   // floppy
+    {".....##.....", ".....##.....", "....####....", "....####....", "..########..", "############",
+     "############", "..########..", "....####....", "....####....", ".....##.....", ".....##....."},   // sparkle
+    {"....kkkk....", "...k....k...", "...k....k...", "........k...", "........k...", ".##########.",
+     ".##########.", ".####kk####.", ".####kk####.", ".#####k####.", ".##########.", ".##########."},   // open lock
+    {"............", "....##......", "...###..#...", "..####...#..", "######.#..#.", "######..#.#.",
+     "######..#.#.", "######.#..#.", "..####...#..", "...###..#...", "....##......", "............"},   // speaker
+};
+
+const sf::Color HackNeon[] = {{255, 40, 160}, {0, 230, 255}, {240, 255, 50}, {150, 70, 255},
+                              {60, 255, 130}, {255, 90, 30}, {255, 255, 255}};
+constexpr int HackNeonCount = 7;
+
+const char* const HackWords[] = {"HIJACKED", "ACCESS GRANTED", "NO SIGNAL", "OVERRIDE", "NOPE", "LOUDER",
+                                 "WAKE UP", "SYSTEM FAILURE", "404", "LIVE", "BASS.EXE", "ERROR",
+                                 "TURN UP", "WE IN IT", "REBOOT", "?!?"};
+constexpr int HackWordCount = 16;
+
+struct HackMessage
+{
+    const char* title;
+    const char* body;
+};
+const HackMessage HackMessages[] = {
+    {"access.exe", "ACCESS GRANTED"},
+    {"WARNING", "Too much bass detected"},
+    {"readme.txt", "Your speakers belong to us now"},
+    {"firewall.sys", "who is u"},
+    {"notice", "Do not unplug"},
+    {"volume.dll", "Volume: yes"},
+    {"error 0x0BAD", "mb"},
+    {"system", "Are you sure? (no)"},
+    {"backdoor.bat", "Knock knock."},
+    {"alert", "New signal found"},
+};
+constexpr int HackMessageCount = 10;
+const char* const HackProgress[] = {"Uploading song...", "Decrypting beat...", "Rerouting signal...",
+                                    "Downloading more bass...", "Bypassing firewall...", "Injecting virus..."};
+constexpr int HackProgressCount = 6;
+const char* const HackIconNames[] = {"lol.png", "rip.png", "luv.png", "zap.png", "watching.png",
+                                     "click_me.png", "backup.png", "shiny.png", "unlocked.png", "loud.png"};
+
+// One line for the terminal; tone picks its color.
+std::string hackLine(std::mt19937& rng, const Spectrum& spectrum, int& tone)
+{
+    std::uniform_int_distribution<int> which(0, 15);
+    std::uniform_int_distribution<int> byte(0, 255);
+    char buf[128];
+    tone = 0;
+    switch (which(rng))
+    {
+        case 0: std::snprintf(buf, sizeof(buf), "> inject payload --target 0x%04X", byte(rng) * 256 + byte(rng)); tone = 1; break;
+        case 1: std::snprintf(buf, sizeof(buf), "[ OK ] handshake 10.%d.%d.%d", byte(rng), byte(rng), byte(rng)); tone = 2; break;
+        case 2: std::snprintf(buf, sizeof(buf), "bypass firewall ........ done"); tone = 2; break;
+        case 3: std::snprintf(buf, sizeof(buf), "decrypt %08X%08X", byte(rng) * 16777 + byte(rng), byte(rng) * 65521 + byte(rng)); break;
+        case 4: std::snprintf(buf, sizeof(buf), "> ping node_%02d   %d ms", byte(rng) % 64, 4 + byte(rng) % 90); tone = 1; break;
+        case 5: std::snprintf(buf, sizeof(buf), "loading l00p.exe [%3d%%]", byte(rng) * 100 / 255); break;
+        case 6: std::snprintf(buf, sizeof(buf), "!! trace detected -- spoofing"); tone = 3; break;
+        case 7: std::snprintf(buf, sizeof(buf), "cat /dev/beat > /dev/speakers"); tone = 1; break;
+        case 8: std::snprintf(buf, sizeof(buf), "sudo turn-it-up --max"); tone = 1; break;
+        case 9: std::snprintf(buf, sizeof(buf), "rerouting signal ... %d hops", 3 + byte(rng) % 40); break;
+        case 10:
+            std::snprintf(buf, sizeof(buf), "%02X %02X %02X %02X %02X %02X %02X %02X", byte(rng), byte(rng), byte(rng),
+                          byte(rng), byte(rng), byte(rng), byte(rng), byte(rng));
+            break;
+        case 11: std::snprintf(buf, sizeof(buf), "> override --all"); tone = 3; break;
+        case 12:
+            std::snprintf(buf, sizeof(buf), "bass %3d%%  kick %3d%%  nrg %3d%%",
+                          static_cast<int>(std::clamp(spectrum.bass(), 0.f, 1.f) * 100.f),
+                          static_cast<int>(std::clamp(spectrum.beat(), 0.f, 1.f) * 100.f),
+                          static_cast<int>(std::clamp(spectrum.energy(), 0.f, 1.f) * 100.f));
+            tone = 4;
+            break;
+        case 13: std::snprintf(buf, sizeof(buf), "upload chunk %d/%d", 1 + byte(rng) % 99, 100); break;
+        case 14: std::snprintf(buf, sizeof(buf), "WARNING: they can hear you"); tone = 3; break;
+        default:
+        {
+            std::string bits;
+            for (int i = 0; i < 24; ++i)
+                bits += (byte(rng) & 1) ? '1' : '0';
+            return bits;
+        }
+    }
+    return buf;
+}
+
+void hackBox(sf::VertexArray& out, const sf::Transform& tf, float x0, float y0, float x1, float y1, sf::Color c)
+{
+    quad(out, tf.transformPoint({x0, y0}), tf.transformPoint({x1, y0}), tf.transformPoint({x1, y1}),
+         tf.transformPoint({x0, y1}), c, c, c, c);
+}
+
+// A pixel icon centered on the transform's origin. As a sticker it gets a white die-cut border and a hard shadow.
+void hackIcon(sf::VertexArray& out, const sf::Transform& tf, int icon, float cell, sf::Color color, bool sticker)
+{
+    const char* const* rows = HackIcons[((icon % HackIconCount) + HackIconCount) % HackIconCount];
+    const float half = 6.f * cell;
+    auto each = [&](auto&& fn)
+    {
+        for (int y = 0; y < 12; ++y)
+            for (int x = 0; x < 12; ++x)
+                if (rows[y][x] != '.')
+                    fn(static_cast<float>(x) * cell - half, static_cast<float>(y) * cell - half, rows[y][x]);
+    };
+    if (sticker)
+    {
+        const float pad = cell * 1.1f;
+        const float drop = cell * 0.9f;
+        each([&](float x, float y, char) { hackBox(out, tf, x - pad + drop, y - pad + drop, x + cell + pad + drop, y + cell + pad + drop, sf::Color(0, 0, 0, 200)); });
+        each([&](float x, float y, char) { hackBox(out, tf, x - pad, y - pad, x + cell + pad, y + cell + pad, sf::Color::White); });
+    }
+    each([&](float x, float y, char c)
+         {
+             const sf::Color col = c == 'k' ? sf::Color(12, 10, 18) : c == 'w' ? sf::Color::White : color;
+             hackBox(out, tf, x - 0.3f, y - 0.3f, x + cell + 0.3f, y + cell + 0.3f, col);
+         });
+}
+
+float easeOutBack(float t)
+{
+    t = std::clamp(t, 0.f, 1.f) - 1.f;
+    return 1.f + t * t * (2.7f * t + 1.7f);
+}
+} // namespace
+
+void Renderer::loadHijackFonts()
+{
+    if (m_hackFontsTried)
+        return;
+    m_hackFontsTried = true;
+    for (const auto& path : platform::monoFontCandidates())
+        if (m_monoFont.openFromFile(path))
+        {
+            m_hasMono = true;
+            break;
+        }
+    for (const auto& path : platform::boldFontCandidates())
+        if (m_boldFont.openFromFile(path))
+        {
+            m_hasBold = true;
+            break;
+        }
+}
+
+void Renderer::drawHijack(const Spectrum& spectrum, float dt, const UiState& ui)
+{
+    loadHijackFonts();
+    std::uniform_real_distribution<float> uni(0.f, 1.f);
+    const sf::Font* mono = m_hasMono ? &m_monoFont : m_font;
+    const sf::Font* bold = m_hasBold ? &m_boldFont : m_font;
+    const float beat = spectrum.beat();
+    const float energy = spectrum.energy();
+    const float unit = std::min(m_size.x, m_size.y);
+    const float glitch = cfg("hijack.glitch");
+    auto neonPick = [&] { return HackNeon[static_cast<int>(uni(m_rng) * HackNeonCount) % HackNeonCount]; };
+
+    const sf::Vector2u want{static_cast<unsigned>(m_size.x), static_cast<unsigned>(m_size.y)};
+    if (m_hijackLayer.getSize() != want && m_hijackLayer.resize(want))
+        m_hijackLayer.setSmooth(true);
+    sf::RenderTexture& layer = m_hijackLayer;
+
+    // ---- What the music sets off ----
+    const float lastBeat = m_hackLastBeat;
+    m_hackLastBeat = beat;
+    auto crossed = [&](float level) { return beat > level && lastBeat <= level; };
+    const bool kick = crossed(0.35f);
+    const bool bigKick = crossed(0.6f);
+    const bool hugeKick = crossed(0.82f);
+    m_hackSeedTimer -= dt;
+    if (m_hackSeedTimer <= 0.f || kick)
+    {
+        m_hackSeed = uni(m_rng) * 100.f;
+        m_hackSeedTimer = 0.05f + 0.06f * uni(m_rng);
+    }
+    m_hackInvert *= std::exp(-16.f * dt);
+    if (hugeKick && uni(m_rng) < 0.3f * glitch)
+        m_hackInvert = 0.9f;
+    if (bigKick && uni(m_rng) < 0.15f)
+        m_hackPalette += 1.f;
+
+    // Popups.
+    const float popups = cfg("hijack.popups");
+    m_hackPopupTimer -= dt * popups;
+    const std::size_t maxPopups = static_cast<std::size_t>(5.f + 3.f * popups);
+    auto spawnPopup = [&](int kind, sf::Vector2f at, float delay)
+    {
+        HackPopup p;
+        p.kind = kind;
+        const float w = unit * (kind == 4 ? 0.22f + 0.08f * uni(m_rng) : 0.36f + 0.16f * uni(m_rng));
+        float h = w * 0.42f;
+        if (kind == 1) h = w * 0.36f;
+        if (kind == 2) h = w * 0.44f;
+        if (kind == 3) h = w * 0.5f;
+        if (kind == 4) h = w * 0.95f;
+        if (kind == 5)
+        {
+            const sf::Vector2f is(m_image.getSize());
+            h = w * std::clamp(is.y / std::max(is.x, 1.f), 0.5f, 1.3f) + unit * 0.034f;
+        }
+        p.size = {w, h};
+        p.position = at.x >= 0.f ? at
+                                 : sf::Vector2f{(m_size.x - w) * uni(m_rng), m_size.y * 0.04f + (m_size.y * 0.8f - h) * uni(m_rng)};
+        p.age = -delay;
+        p.life = 1.6f + 2.f * uni(m_rng);
+        p.speed = 0.35f + 0.6f * uni(m_rng);
+        p.icon = static_cast<int>(uni(m_rng) * HackIconCount) % HackIconCount;
+        p.text = static_cast<int>(uni(m_rng) * 1000.f);
+        p.bar = neonPick();
+        do
+            p.shadow = neonPick();
+        while (p.shadow == p.bar);
+        m_hackPopups.push_back(p);
+    };
+    if (popups > 0.f && m_hackPopups.size() < maxPopups && (m_hackPopupTimer <= 0.f || (kick && uni(m_rng) < 0.4f * popups)))
+    {
+        const float r = uni(m_rng);
+        int kind = r < 0.25f ? 0 : r < 0.45f ? 1 : r < 0.63f ? 2 : r < 0.8f ? 3 : 4;
+        if (m_hasImage && uni(m_rng) < 0.22f)
+            kind = 5;
+        spawnPopup(kind, {-1.f, -1.f}, 0.f);
+        m_hackPopupTimer = 1.8f + 1.6f * uni(m_rng);
+    }
+    if (popups > 0.f && hugeKick && uni(m_rng) < 0.18f * popups && m_hackPopups.size() < maxPopups + 4)
+    {
+        // A cascade of the same error box, one after another.
+        const sf::Vector2f start{m_size.x * (0.1f + 0.45f * uni(m_rng)), m_size.y * (0.08f + 0.3f * uni(m_rng))};
+        const int text = static_cast<int>(uni(m_rng) * 1000.f);
+        for (int i = 0; i < 5; ++i)
+        {
+            spawnPopup(2, start + sf::Vector2f{unit * 0.03f, unit * 0.03f} * static_cast<float>(i), 0.07f * static_cast<float>(i));
+            m_hackPopups.back().text = text;
+            m_hackPopups.back().life = 1.4f + 0.1f * static_cast<float>(i);
+        }
+    }
+    for (auto& p : m_hackPopups)
+    {
+        p.age += dt;
+        if (p.age > 0.f)
+            p.progress = std::min(1.f, p.progress + dt * p.speed * (0.4f + energy + beat));
+    }
+    m_hackPopups.erase(std::remove_if(m_hackPopups.begin(), m_hackPopups.end(), [](const HackPopup& p) { return p.age > p.life; }),
+                       m_hackPopups.end());
+
+    // Stickers.
+    const float stickers = cfg("hijack.stickers");
+    m_hackStickerTimer -= dt * stickers * (1.f + 2.f * energy);
+    const std::size_t maxStickers = static_cast<std::size_t>(8.f + 7.f * stickers);
+    if (stickers > 0.f && m_hackStickers.size() < maxStickers && (m_hackStickerTimer <= 0.f || (kick && uni(m_rng) < 0.5f * stickers)))
+    {
+        HackSticker s;
+        s.position = {m_size.x * (0.05f + 0.9f * uni(m_rng)), m_size.y * (0.08f + 0.78f * uni(m_rng))};
+        s.velocity = {(uni(m_rng) - 0.5f) * unit * 0.04f, (uni(m_rng) - 0.5f) * unit * 0.03f};
+        s.angle = (uni(m_rng) - 0.5f) * 40.f;
+        s.spin = (uni(m_rng) - 0.5f) * 14.f;
+        s.size = unit * (0.06f + 0.07f * uni(m_rng)) * (0.85f + 0.4f * beat);
+        s.life = 2.2f + 3.f * uni(m_rng);
+        s.icon = static_cast<int>(uni(m_rng) * HackIconCount) % HackIconCount;
+        s.color = neonPick();
+        if (s.color == sf::Color::White)
+            s.color = HackNeon[0];
+        if (m_hasImage && uni(m_rng) < 0.4f)
+        {
+            // A torn-out piece of your picture.
+            const sf::Vector2f is(m_image.getSize());
+            const float cw = is.x * (0.2f + 0.3f * uni(m_rng));
+            const float ch = std::min(is.y, cw * (0.6f + 0.6f * uni(m_rng)));
+            s.cut = sf::FloatRect({(is.x - cw) * uni(m_rng), (is.y - ch) * uni(m_rng)}, {cw, ch});
+            s.icon = -1;
+            s.size *= 1.6f;
+        }
+        m_hackStickers.push_back(s);
+        m_hackStickerTimer = 0.8f + 1.2f * uni(m_rng);
+    }
+    for (auto& s : m_hackStickers)
+    {
+        s.age += dt;
+        s.position += s.velocity * dt;
+        s.angle += s.spin * dt;
+    }
+    m_hackStickers.erase(std::remove_if(m_hackStickers.begin(), m_hackStickers.end(), [](const HackSticker& s) { return s.age > s.life; }),
+                         m_hackStickers.end());
+
+    // Big words.
+    m_hackWordLife = std::max(0.f, m_hackWordLife - dt);
+    m_hackWordCooldown -= dt;
+    if (cfg("hijack.words") > 0.5f && m_hackWordCooldown <= 0.f && ((bigKick && uni(m_rng) < 0.6f) || (kick && m_hackWordCooldown < -3.f)))
+    {
+        m_hackWord = HackWords[static_cast<int>(uni(m_rng) * HackWordCount) % HackWordCount];
+        m_hackWordMax = m_hackWordLife = 0.6f + 0.6f * uni(m_rng);
+        m_hackWordPos = {m_size.x * (0.3f + 0.4f * uni(m_rng)), m_size.y * (0.3f + 0.4f * uni(m_rng))};
+        m_hackWordAngle = (uni(m_rng) - 0.5f) * 14.f;
+        m_hackWordColor = uni(m_rng) < 0.5f ? sf::Color::White : HackNeon[2];
+        m_hackWordCooldown = 1.3f + 2.f * uni(m_rng);
+    }
+
+    // Terminal typing.
+    if (m_hackTyping.empty())
+    {
+        int tone = 0;
+        m_hackTyping = hackLine(m_rng, spectrum, tone);
+        const sf::Color tones[] = {{215, 215, 225}, {0, 230, 255}, {60, 255, 130}, {255, 60, 170}, {240, 255, 60}};
+        m_hackTypingColor = tones[tone];
+        m_hackTyped = 0.f;
+    }
+    m_hackTyped += dt * (25.f + 140.f * energy + 160.f * beat);
+    if (m_hackTyped >= static_cast<float>(m_hackTyping.size()) + 4.f)
+    {
+        m_hackLines.emplace_back(m_hackTyping, m_hackTypingColor);
+        if (m_hackLines.size() > 40)
+            m_hackLines.erase(m_hackLines.begin());
+        m_hackTyping.clear();
+    }
+
+    // ---- Background ----
+    layer.clear(sf::Color::Black);
+    m_hijackBg.setUniform("resolution", sf::Glsl::Vec2{m_size.x, m_size.y});
+    m_hijackBg.setUniform("time", m_time);
+    m_hijackBg.setUniform("bass", spectrum.bass());
+    m_hijackBg.setUniform("beat", beat);
+    m_hijackBg.setUniform("energy", energy);
+    m_hijackBg.setUniform("palette", m_hackPalette);
+    m_hijackBg.setUniform("dots", cfg("hijack.dots"));
+    m_hijackBg.setUniform("audio", m_audioTexture);
+    m_hijackBg.setUniform("hasImage", m_hasImage ? 1.f : 0.f);
+    if (m_hasImage)
+    {
+        m_hijackBg.setUniform("image", m_image);
+        m_hijackBg.setUniform("fitScale", imageFitScale());
+    }
+    layer.draw(sf::RectangleShape(m_size), sf::RenderStates(&m_hijackBg));
+
+    auto makeText = [&](const sf::Font& font, const sf::String& s, float size, sf::Color color)
+    {
+        sf::Text t(font, s, static_cast<unsigned>(std::max(8.f, size)));
+        t.setFillColor(color);
+        return t;
+    };
+    // Fit a line (or two) of text into a box, centered at the transform's origin.
+    auto fitText = [&](const sf::Font& font, std::string s, float maxW, float maxH, sf::Color color)
+    {
+        sf::Text t = makeText(font, s, maxH * 0.55f, color);
+        float k = std::min({1.f, maxW / std::max(1.f, t.getLocalBounds().size.x), maxH / std::max(1.f, t.getLocalBounds().size.y)});
+        const auto space = s.find(' ', s.size() / 3);
+        if (k < 0.72f && space != std::string::npos)
+        {
+            s[space] = '\n';
+            t = makeText(font, s, maxH * 0.36f, color);
+            k = std::min({1.f, maxW / std::max(1.f, t.getLocalBounds().size.x), maxH / std::max(1.f, t.getLocalBounds().size.y)});
+        }
+        t.setCharacterSize(static_cast<unsigned>(std::max(8.f, static_cast<float>(t.getCharacterSize()) * k)));
+        const sf::FloatRect b = t.getLocalBounds();
+        t.setOrigin(b.position + b.size * 0.5f);
+        return t;
+    };
+
+    // ---- Stickers ----
+    for (const auto& s : m_hackStickers)
+    {
+        const float pop = easeOutBack(s.age / 0.22f) * (s.life - s.age < 0.2f ? (s.life - s.age) / 0.2f : 1.f);
+        if (pop <= 0.01f)
+            continue;
+        sf::Transform tf;
+        tf.translate(s.position).rotate(sf::degrees(s.angle)).scale({pop, pop});
+        sf::VertexArray va(sf::PrimitiveType::Triangles);
+        if (s.icon >= 0)
+        {
+            hackIcon(va, tf, s.icon, s.size / 12.f, s.color, true);
+            layer.draw(va);
+        }
+        else
+        {
+            const float w = s.size;
+            const float h = w * s.cut.size.y / std::max(1.f, s.cut.size.x);
+            const float border = unit * 0.008f;
+            hackBox(va, tf, -w * 0.5f - border + border * 1.5f, -h * 0.5f - border + border * 1.5f, w * 0.5f + border * 2.5f, h * 0.5f + border * 2.5f, sf::Color(0, 0, 0, 200));
+            hackBox(va, tf, -w * 0.5f - border, -h * 0.5f - border, w * 0.5f + border, h * 0.5f + border, sf::Color::White);
+            layer.draw(va);
+            sf::Sprite cut(m_image);
+            cut.setTextureRect(sf::IntRect({static_cast<int>(s.cut.position.x), static_cast<int>(s.cut.position.y)},
+                                           {static_cast<int>(s.cut.size.x), static_cast<int>(s.cut.size.y)}));
+            cut.setScale({w / s.cut.size.x, h / s.cut.size.y});
+            cut.setPosition({-w * 0.5f, -h * 0.5f});
+            layer.draw(cut, sf::RenderStates(tf));
+        }
+    }
+
+    // ---- Terminal ----
+    if (cfg("hijack.terminal") > 0.5f && mono)
+    {
+        const float x0 = m_size.x * 0.03f;
+        const float y0 = m_size.y * 0.07f;
+        const float w = std::min(m_size.x * 0.36f, unit * 0.7f);
+        const float h = m_size.y * 0.4f;
+        const float fontSize = std::max(10.f, unit * 0.021f);
+        const float lineH = fontSize * 1.3f;
+        const float titleH = lineH * 1.25f;
+        sf::VertexArray va(sf::PrimitiveType::Triangles);
+        const sf::Transform id;
+        const sf::Color edge = HackNeon[static_cast<int>(m_hackPalette) % 2 == 0 ? 1 : 0];
+        const float e = std::max(2.f, unit * 0.003f);
+        hackBox(va, id, x0, y0 + titleH, x0 + w, y0 + h, sf::Color(6, 4, 12, 228));
+        hackBox(va, id, x0 - e, y0 - e, x0 + w + e, y0 + titleH, edge);   // title strip and the frame around it
+        hackBox(va, id, x0 - e, y0 + titleH, x0, y0 + h + e, edge);
+        hackBox(va, id, x0 + w, y0 + titleH, x0 + w + e, y0 + h + e, edge);
+        hackBox(va, id, x0, y0 + h, x0 + w, y0 + h + e, edge);
+        layer.draw(va);
+        sf::Text title = makeText(*mono, "term://node_07  [live]", fontSize * 0.9f, sf::Color(10, 8, 16));
+        title.setPosition({std::round(x0 + fontSize * 0.5f), std::round(y0 + titleH * 0.12f)});
+        layer.draw(title);
+
+        const std::size_t charsFit = static_cast<std::size_t>(std::max(8.f, (w - fontSize) / (fontSize * 0.61f)));
+        const int rows = std::max(1, static_cast<int>((h - titleH - lineH * 0.4f) / lineH));
+        std::vector<std::pair<std::string, sf::Color>> shown;
+        const int fromHistory = rows - 1;
+        for (int i = std::max(0, static_cast<int>(m_hackLines.size()) - fromHistory); i < static_cast<int>(m_hackLines.size()); ++i)
+            shown.push_back(m_hackLines[static_cast<std::size_t>(i)]);
+        std::string typing = m_hackTyping.substr(0, std::min(m_hackTyping.size(), static_cast<std::size_t>(m_hackTyped)));
+        const bool blink = std::fmod(m_time, 0.6f) < 0.3f;
+        shown.emplace_back(typing + (blink ? "_" : " "), m_hackTypingColor);
+        float y = y0 + titleH + lineH * 0.25f;
+        for (auto& [line, color] : shown)
+        {
+            sf::Text t = makeText(*mono, line.substr(0, charsFit), fontSize, color);
+            t.setPosition({std::round(x0 + fontSize * 0.5f), std::round(y)});
+            layer.draw(t);
+            y += lineH;
+        }
+    }
+
+    // ---- Spectrum as stacked pixel blocks ----
+    if (cfg("hijack.bars") > 0.5f)
+    {
+        constexpr std::size_t Columns = 32;
+        const std::vector<float> bands = resample(spectrum.bands(), Columns);
+        const std::vector<float> peaks = resample(spectrum.peaks(), Columns);
+        const float left = m_size.x * 0.04f;
+        const float slot = m_size.x * 0.92f / static_cast<float>(Columns);
+        const float block = slot * 0.8f;
+        const float rowH = std::min(block, m_size.y * 0.022f);
+        const float bottom = m_size.y * 0.965f;
+        constexpr int MaxRows = 11;
+        sf::VertexArray va(sf::PrimitiveType::Triangles);
+        const sf::Transform id;
+        const sf::Color low = HackNeon[1], mid = HackNeon[0], high = HackNeon[2];
+        for (std::size_t i = 0; i < Columns; ++i)
+        {
+            const int n = static_cast<int>(std::round(std::clamp(bands[i], 0.f, 1.f) * MaxRows));
+            const float x = left + slot * static_cast<float>(i) + (slot - block) * 0.5f;
+            for (int k = 0; k < n; ++k)
+            {
+                const float t = static_cast<float>(k) / MaxRows;
+                const sf::Color c = t < 0.45f ? low : t < 0.8f ? mid : high;
+                const float yb = bottom - static_cast<float>(k) * rowH * 1.25f;
+                hackBox(va, id, x + 2.f, yb - rowH + 2.f, x + block + 2.f, yb + 2.f, sf::Color(0, 0, 0, 170));
+                hackBox(va, id, x, yb - rowH, x + block, yb, c);
+            }
+            const int pk = static_cast<int>(std::round(std::clamp(peaks[i], 0.f, 1.f) * MaxRows));
+            if (pk > n)
+            {
+                const float yb = bottom - static_cast<float>(pk) * rowH * 1.25f;
+                hackBox(va, id, x, yb - rowH * 0.5f, x + block, yb, sf::Color::White);
+            }
+        }
+        layer.draw(va);
+    }
+
+    // ---- Popups ----
+    for (std::size_t index = 0; index < m_hackPopups.size(); ++index)
+    {
+        const HackPopup& p = m_hackPopups[index];
+        if (p.age <= 0.f)
+            continue;
+        const float left = p.life - p.age;
+        if (left < 0.25f && std::fmod(p.age * 30.f, 2.f) < 1.f)
+            continue; // glitches out before it vanishes
+        const float pop = easeOutBack(p.age / 0.16f);
+        const float w = p.size.x, h = p.size.y;
+        const float tb = unit * 0.034f;
+        sf::Transform tf;
+        tf.translate(p.position + p.size * 0.5f).scale({pop, pop}).translate(-p.size * 0.5f);
+        const bool dark = p.kind == 3;
+        const sf::Color body = dark ? sf::Color(8, 6, 14) : sf::Color(236, 236, 242);
+        const sf::Color ink = dark ? sf::Color(230, 230, 240) : sf::Color(14, 12, 22);
+        const float outline = std::max(2.f, unit * 0.004f);
+        const float drop = unit * 0.014f;
+        sf::VertexArray va(sf::PrimitiveType::Triangles);
+        hackBox(va, tf, drop - outline, drop - outline, w + drop + outline, h + drop + outline, p.shadow);
+        hackBox(va, tf, -outline, -outline, w + outline, h + outline, sf::Color(10, 8, 16));
+        hackBox(va, tf, 0.f, 0.f, w, h, body);
+        hackBox(va, tf, 0.f, 0.f, w, tb, p.bar);
+        hackBox(va, tf, 0.f, tb - outline * 0.5f, w, tb + outline * 0.5f, sf::Color(10, 8, 16));
+        // Close button.
+        const float bx0 = w - tb + tb * 0.18f, by0 = tb * 0.18f, bs = tb * 0.64f;
+        hackBox(va, tf, bx0, by0, bx0 + bs, by0 + bs, sf::Color(10, 8, 16));
+        {
+            const float m = bs * 0.25f, th = std::max(1.5f, bs * 0.12f);
+            const sf::Vector2f a = {bx0 + m, by0 + m}, b = {bx0 + bs - m, by0 + bs - m};
+            const sf::Vector2f c = {bx0 + bs - m, by0 + m}, d = {bx0 + m, by0 + bs - m};
+            auto stroke = [&](sf::Vector2f s0, sf::Vector2f s1)
+            {
+                sf::Vector2f dir = s1 - s0;
+                const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+                const sf::Vector2f n = sf::Vector2f{-dir.y, dir.x} / len * th;
+                quad(va, tf.transformPoint(s0 + n), tf.transformPoint(s1 + n), tf.transformPoint(s1 - n), tf.transformPoint(s0 - n),
+                     sf::Color::White, sf::Color::White, sf::Color::White, sf::Color::White);
+            };
+            stroke(a, b);
+            stroke(c, d);
+        }
+        const float cx = w * 0.5f, cy = tb + (h - tb) * 0.5f;
+        const float pad = w * 0.06f;
+        const HackMessage& msg = HackMessages[p.text % HackMessageCount];
+        std::string titleText = msg.title;
+        if (p.kind == 1) titleText = "upload.exe";
+        if (p.kind == 3) titleText = "signal.exe";
+        if (p.kind == 4) titleText = HackIconNames[p.icon];
+        if (p.kind == 5) titleText = "screenshot.png";
+
+        if (p.kind == 2)
+        {
+            // Warning triangle.
+            const float ts = (h - tb) * 0.42f;
+            const sf::Vector2f c0{pad + ts * 0.5f, tb + (h - tb) * 0.22f};
+            const sf::Color y = HackNeon[2];
+            va.append({tf.transformPoint({c0.x, c0.y}), y});
+            va.append({tf.transformPoint({c0.x + ts * 0.58f, c0.y + ts}), y});
+            va.append({tf.transformPoint({c0.x - ts * 0.58f, c0.y + ts}), y});
+            hackBox(va, tf, c0.x - ts * 0.06f, c0.y + ts * 0.3f, c0.x + ts * 0.06f, c0.y + ts * 0.7f, sf::Color(10, 8, 16));
+            hackBox(va, tf, c0.x - ts * 0.06f, c0.y + ts * 0.78f, c0.x + ts * 0.06f, c0.y + ts * 0.9f, sf::Color(10, 8, 16));
+            // Buttons.
+            const float bw = w * 0.2f, bh = (h - tb) * 0.22f, byy = h - bh - (h - tb) * 0.1f;
+            for (int i = 0; i < 2; ++i)
+            {
+                const float bxx = w - pad - bw * static_cast<float>(2 - i) - pad * 0.5f * static_cast<float>(1 - i);
+                hackBox(va, tf, bxx - outline, byy - outline, bxx + bw + outline, byy + bh + outline, sf::Color(10, 8, 16));
+                hackBox(va, tf, bxx, byy, bxx + bw, byy + bh, i == 0 ? sf::Color(205, 205, 215) : p.bar);
+            }
+        }
+        if (p.kind == 1)
+        {
+            const float bx = pad, by = tb + (h - tb) * 0.55f, bw = w - pad * 2.f, bh = (h - tb) * 0.24f;
+            hackBox(va, tf, bx - outline, by - outline, bx + bw + outline, by + bh + outline, sf::Color(10, 8, 16));
+            hackBox(va, tf, bx, by, bx + bw, by + bh, sf::Color(30, 28, 40));
+            const int segs = 14;
+            const int filled = static_cast<int>(p.progress * segs);
+            const float sw = bw / segs;
+            for (int i = 0; i < filled; ++i)
+                hackBox(va, tf, bx + sw * static_cast<float>(i) + 2.f, by + 2.f, bx + sw * static_cast<float>(i + 1) - 2.f, by + bh - 2.f, p.bar == sf::Color::White ? HackNeon[1] : p.bar);
+        }
+        if (p.kind == 3)
+        {
+            const std::size_t n = 24;
+            const std::vector<float> bands = resample(spectrum.bands(), n);
+            const float bx = pad, bw = w - pad * 2.f, base = h - pad * 0.6f, top = tb + pad * 0.6f;
+            const float sw = bw / static_cast<float>(n);
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                const float v = std::clamp(bands[i], 0.f, 1.f);
+                const sf::Color c = HackNeon[(i * 3 / n + static_cast<std::size_t>(m_hackPalette)) % 3];
+                hackBox(va, tf, bx + sw * static_cast<float>(i) + 1.5f, base - (base - top) * (0.04f + 0.96f * v),
+                        bx + sw * static_cast<float>(i + 1) - 1.5f, base, c);
+            }
+        }
+        if (p.kind == 4)
+        {
+            sf::Transform it = tf;
+            it.translate({cx, cy});
+            hackIcon(va, it, p.icon, (h - tb) * 0.62f / 12.f, p.bar == sf::Color::White ? HackNeon[0] : p.bar, false);
+        }
+        layer.draw(va);
+
+        if (p.kind == 5 && m_hasImage)
+        {
+            sf::Sprite pic(m_image);
+            const sf::Vector2f is(m_image.getSize());
+            const float aw = w - outline * 2.f, ah = h - tb - outline * 2.f;
+            const float k = std::min(aw / is.x, ah / is.y);
+            pic.setScale({k, k});
+            pic.setPosition({cx - is.x * k * 0.5f, tb + outline + (ah - is.y * k) * 0.5f});
+            if (beat > 0.6f)
+                pic.setColor(p.bar);
+            layer.draw(pic, sf::RenderStates(tf));
+        }
+
+        // Text.
+        if (mono)
+        {
+            const bool lightBar = static_cast<int>(p.bar.r) + p.bar.g + p.bar.b > 380;
+            sf::Text title = makeText(*mono, titleText, tb * 0.58f, lightBar ? sf::Color(10, 8, 16) : sf::Color::White);
+            title.setPosition({std::round(tb * 0.3f), std::round(tb * 0.14f)});
+            layer.draw(title, sf::RenderStates(tf));
+        }
+        sf::Transform center = tf;
+        if (p.kind == 0 && bold)
+        {
+            center.translate({cx, cy});
+            sf::Text t = fitText(*bold, msg.body, w - pad * 2.f, (h - tb) * 0.7f, ink);
+            layer.draw(t, sf::RenderStates(center));
+        }
+        else if (p.kind == 1 && mono)
+        {
+            center.translate({cx, tb + (h - tb) * 0.3f});
+            char pct[16];
+            std::snprintf(pct, sizeof(pct), "  %d%%", static_cast<int>(p.progress * 100.f));
+            sf::Text t = fitText(*mono, std::string(HackProgress[p.text % HackProgressCount]) + pct, w - pad * 2.f, (h - tb) * 0.3f, ink);
+            layer.draw(t, sf::RenderStates(center));
+        }
+        else if (p.kind == 2 && mono)
+        {
+            const float ts = (h - tb) * 0.42f;
+            center.translate({pad * 1.6f + ts + (w - pad * 2.6f - ts) * 0.5f, tb + (h - tb) * 0.36f});
+            sf::Text t = fitText(*mono, msg.body, w - pad * 2.6f - ts, (h - tb) * 0.42f, ink);
+            layer.draw(t, sf::RenderStates(center));
+            const float bw = w * 0.2f, bh = (h - tb) * 0.22f, byy = h - bh - (h - tb) * 0.1f;
+            const char* labels[2] = {"YES?", "YES"};
+            for (int i = 0; i < 2; ++i)
+            {
+                const float bxx = w - pad - bw * static_cast<float>(2 - i) - pad * 0.5f * static_cast<float>(1 - i);
+                sf::Transform bt = tf;
+                bt.translate({bxx + bw * 0.5f, byy + bh * 0.5f});
+                sf::Text lt = fitText(bold ? *bold : *mono, labels[i], bw * 0.7f, bh * 1.2f, sf::Color(10, 8, 16));
+                layer.draw(lt, sf::RenderStates(bt));
+            }
+        }
+    }
+
+    // ---- Big word ----
+    if (m_hackWordLife > 0.f && bold)
+    {
+        const float age = m_hackWordMax - m_hackWordLife;
+        const bool visible = !(m_hackWordLife < 0.2f && std::fmod(age * 28.f, 2.f) < 1.f);
+        if (visible)
+        {
+            const float pop = easeOutBack(age / 0.12f);
+            sf::Text t = makeText(*bold, m_hackWord, unit * 0.14f, m_hackWordColor);
+            const sf::FloatRect b = t.getLocalBounds();
+            t.setOrigin(b.position + b.size * 0.5f);
+            const sf::Vector2f jitter = beat > 0.4f ? sf::Vector2f{(uni(m_rng) - 0.5f) * unit * 0.012f, (uni(m_rng) - 0.5f) * unit * 0.006f}
+                                                    : sf::Vector2f{};
+            // Stretched wide, but never past the edges of the screen.
+            const float stretch = std::min(1.3f, m_size.x * 0.86f / std::max(1.f, b.size.x + unit * 0.05f));
+            const float squash = std::min(1.f, stretch / 1.3f * 1.15f);
+            const float halfW = (b.size.x * 0.5f + unit * 0.025f) * stretch;
+            sf::Vector2f at = m_hackWordPos;
+            at.x = std::clamp(at.x, halfW + m_size.x * 0.02f, m_size.x * 0.98f - halfW);
+            sf::Transform tf;
+            tf.translate(at + jitter).rotate(sf::degrees(m_hackWordAngle)).scale({stretch * pop, squash * pop});
+            // Black label behind it.
+            sf::VertexArray va(sf::PrimitiveType::Triangles);
+            const float px = b.size.x * 0.5f + unit * 0.02f, py = b.size.y * 0.5f + unit * 0.018f;
+            hackBox(va, tf, -px - 4.f, -py - 4.f, px + 4.f, py + 4.f, HackNeon[(static_cast<int>(m_hackPalette) + 1) % 2 == 0 ? 0 : 1]);
+            hackBox(va, tf, -px, -py, px, py, sf::Color(8, 6, 14));
+            layer.draw(va);
+            const float split = unit * (0.004f + 0.012f * beat * glitch);
+            sf::Text c1 = t;
+            c1.setFillColor(sf::Color(0, 230, 255, 220));
+            sf::Transform t1 = tf;
+            t1.translate({-split, 0.f});
+            layer.draw(c1, sf::RenderStates(t1));
+            sf::Text c2 = t;
+            c2.setFillColor(sf::Color(255, 40, 160, 220));
+            sf::Transform t2 = tf;
+            t2.translate({split, 0.f});
+            layer.draw(c2, sf::RenderStates(t2));
+            layer.draw(t, sf::RenderStates(tf));
+        }
+    }
+
+    // ---- Top-right status: live tag, song, upload bar ----
+    if (mono)
+    {
+        const float fs = std::max(10.f, unit * 0.022f);
+        const float right = m_size.x * 0.97f;
+        float y = m_size.y * 0.05f;
+        auto label = [&](const sf::String& s, sf::Color fg, sf::Color bg)
+        {
+            sf::Text t = makeText(*mono, s, fs, fg);
+            const sf::FloatRect b = t.getLocalBounds();
+            const float x = right - b.size.x - b.position.x - fs * 0.4f;
+            sf::VertexArray va(sf::PrimitiveType::Triangles);
+            hackBox(va, sf::Transform(), x - fs * 0.4f, y - fs * 0.15f, right, y + fs * 1.25f, bg);
+            layer.draw(va);
+            t.setPosition({std::round(x), std::round(y)});
+            layer.draw(t);
+            y += fs * 1.6f;
+        };
+        const bool dot = std::fmod(m_time, 1.f) < 0.6f;
+        const std::string clock = ui.duration > 0.f ? formatTime(ui.position) + " / " + formatTime(ui.duration) : "--:--";
+        label(std::string(dot ? "(o) " : "    ") + "LIVE  " + clock, sf::Color(10, 8, 16), HackNeon[0]);
+        if (!ui.title.isEmpty())
+        {
+            sf::String name = ui.title;
+            if (name.getSize() > 34)
+                name = name.substring(0, 33) + "...";
+            label(sf::String("> ") + name, sf::Color(235, 235, 245), sf::Color(8, 6, 14, 220));
+        }
+        const float progress = ui.duration > 0.f ? std::clamp(ui.position / ui.duration, 0.f, 1.f) : 0.f;
+        std::string barText = "UPLOAD [";
+        for (int i = 0; i < 16; ++i)
+            barText += i < static_cast<int>(progress * 16.f) ? '#' : '.';
+        char pct[16];
+        std::snprintf(pct, sizeof(pct), "] %3d%%", static_cast<int>(progress * 100.f));
+        label(barText + pct, sf::Color(10, 8, 16), HackNeon[1]);
+    }
+    layer.display();
+
+    // ---- Tear the whole frame up ----
+    m_hijackGlitch.setUniform("source", sf::Shader::CurrentTexture);
+    m_hijackGlitch.setUniform("resolution", sf::Glsl::Vec2{m_size.x, m_size.y});
+    m_hijackGlitch.setUniform("seed", m_hackSeed);
+    m_hijackGlitch.setUniform("beat", beat);
+    m_hijackGlitch.setUniform("amount", glitch);
+    m_hijackGlitch.setUniform("invert", m_hackInvert);
+    m_scene.draw(sf::Sprite(layer.getTexture()), sf::RenderStates(&m_hijackGlitch));
+}
+
+namespace
+{
+const char* const RageWords[] = {u8"MÖRE", u8"GÖ", u8"LÖUDËR", u8"HËY", u8"YÜP", u8"WÖAH", u8"JÜMP", u8"TÜRN ÜP", u8"NÖ SLËEP"};
+constexpr int RageWordCount = 9;
+} // namespace
+
+void Renderer::drawRage(const Spectrum& spectrum, float dt)
+{
+    loadHijackFonts();
+    std::uniform_real_distribution<float> uni(0.f, 1.f);
+    const float quality = cfg("rage.quality");
+    const float scale = std::min(1.f, std::sqrt(650000.f * quality * quality / (m_size.x * m_size.y)));
+    const sf::Vector2u want{std::max(1u, static_cast<unsigned>(m_size.x * scale)),
+                            std::max(1u, static_cast<unsigned>(m_size.y * scale))};
+    if (m_rageTarget.getSize() != want && m_rageTarget.resize(want))
+        m_rageTarget.setSmooth(true);
+
+    const float beat = spectrum.beat();
+    const float bass = spectrum.bass();
+    const float energy = spectrum.energy();
+    const float unit = std::min(m_size.x, m_size.y);
+    const float strobeAmount = cfg("rage.strobe");
+    const float shakeAmount = cfg("rage.shake");
+    const float lastBeat = m_rageLastBeat;
+    m_rageLastBeat = beat;
+    auto crossed = [&](float level) { return beat > level && lastBeat <= level; };
+    const bool kick = crossed(0.35f);
+    const bool bigKick = crossed(0.6f);
+    const bool hugeKick = crossed(0.82f);
+
+    // The crowd jumps faster with the bass; the lights sweep faster when it's loud.
+    m_rageJump += dt * (3.5f + 7.f * bass + 4.f * beat);
+    m_rageSweep += dt * (0.35f + 1.5f * energy + 2.f * beat);
+
+    // Strobes: a hit on kicks, and rapid flicker when the track is going hard.
+    m_rageStrobe *= std::exp(-24.f * dt);
+    if (kick && uni(m_rng) < 0.55f * strobeAmount)
+        m_rageStrobe = 1.f;
+    if (energy > 0.45f && uni(m_rng) < dt * 14.f * strobeAmount * (energy - 0.45f) * 2.f)
+        m_rageStrobe = std::max(m_rageStrobe, 0.75f);
+    m_rageStrobe = std::min(m_rageStrobe, strobeAmount);
+
+    // Camera: punches and shakes on hits, blows out on the biggest ones.
+    m_rageFlash *= std::exp(-8.f * dt);
+    if (hugeKick && uni(m_rng) < 0.6f * strobeAmount)
+        m_rageFlash = 1.f;
+    m_rageKickShake *= std::exp(-7.f * dt);
+    if (kick)
+        m_rageKickShake = std::max(m_rageKickShake, 0.5f + beat);
+    const float a = uni(m_rng) * 6.2832f;
+    m_rageShake = sf::Vector2f{std::cos(a), std::sin(a)} * (m_rageKickShake * 0.018f * shakeAmount) +
+                  sf::Vector2f{0.006f * std::sin(m_time * 1.7f), 0.005f * std::sin(m_time * 2.3f + 1.f)} * shakeAmount;
+    const float zoom = 1.f + (0.05f * beat + 0.03f * m_rageKickShake) * shakeAmount;
+    {
+        const sf::Vector2f size(m_rageTarget.getSize());
+        m_rage.setUniform("resolution", sf::Glsl::Vec2{size.x, size.y});
+        m_rage.setUniform("time", m_time);
+        m_rage.setUniform("bass", bass);
+        m_rage.setUniform("beat", beat);
+        m_rage.setUniform("energy", energy);
+        m_rage.setUniform("strobe", m_rageStrobe);
+        m_rage.setUniform("flash", m_rageFlash);
+        m_rage.setUniform("beamCount", cfg("rage.beams"));
+        m_rage.setUniform("crowd", cfg("rage.crowd"));
+        m_rage.setUniform("faces", cfg("rage.faces"));
+        m_rage.setUniform("grain", cfg("rage.grain"));
+        m_rage.setUniform("jump", m_rageJump);
+        m_rage.setUniform("sweep", m_rageSweep);
+        m_rage.setUniform("shake", sf::Glsl::Vec2{m_rageShake.x, m_rageShake.y});
+        m_rage.setUniform("zoom", zoom);
+        m_rage.setUniform("audio", m_audioTexture);
+        m_rage.setUniform("hasImage", m_hasImage ? 1.f : 0.f);
+        if (m_hasImage)
+        {
+            const sf::Vector2f is(m_image.getSize());
+            m_rage.setUniform("image", m_image);
+            m_rage.setUniform("imageAspect", is.x / std::max(is.y, 1.f));
+        }
+        m_rageTarget.clear(sf::Color::Black);
+        m_rageTarget.draw(sf::RectangleShape(size), sf::RenderStates(&m_rage));
+        m_rageTarget.display();
+    }
+    {
+        const sf::Vector2f size(m_rageTarget.getSize());
+        sf::Sprite frame(m_rageTarget.getTexture());
+        frame.setScale({m_size.x / size.x, m_size.y / size.y});
+        m_scene.draw(frame);
+    }
+
+    // ---- Bell sparkles on the high notes ----
+    const float treble = spectrum.treble();
+    m_rageTrebleAvg += (treble - m_rageTrebleAvg) * (1.f - std::exp(-2.f * dt));
+    const float spike = std::max(0.f, treble - m_rageTrebleAvg * 1.12f);
+    const float bells = cfg("rage.bells");
+    m_rageGlintAcc += dt * bells * (1.2f + 90.f * spike + 4.f * treble);
+    if (kick)
+        m_rageGlintAcc += bells * 1.5f;
+    while (m_rageGlintAcc >= 1.f && m_rageGlints.size() < 48)
+    {
+        m_rageGlintAcc -= 1.f;
+        RageGlint g;
+        g.position = {m_size.x * (0.05f + 0.9f * uni(m_rng)), m_size.y * (0.04f + 0.6f * uni(m_rng))};
+        g.size = unit * (0.02f + 0.045f * uni(m_rng));
+        g.life = 0.22f + 0.3f * uni(m_rng);
+        g.angle = (uni(m_rng) - 0.5f) * 0.5f;
+        m_rageGlints.push_back(g);
+    }
+    m_rageGlintAcc = std::min(m_rageGlintAcc, 1.f);
+    sf::VertexArray glints(sf::PrimitiveType::Triangles);
+    for (auto& g : m_rageGlints)
+    {
+        g.age += dt;
+        const float env = std::sin(Pi * std::clamp(g.age / g.life, 0.f, 1.f));
+        const float c = std::cos(g.angle), s = std::sin(g.angle);
+        auto diamond = [&](float len, float wid, float rot, sf::Color col)
+        {
+            const float rc = std::cos(rot), rs = std::sin(rot);
+            auto at = [&](float x, float y)
+            {
+                const float xr = x * rc - y * rs, yr = x * rs + y * rc;
+                return g.position + sf::Vector2f{xr * c - yr * s, xr * s + yr * c};
+            };
+            quad(glints, at(0.f, -len), at(wid, 0.f), at(0.f, len), at(-wid, 0.f), col, col, col, col);
+        };
+        const float L = g.size * env;
+        const sf::Color gold(255, 214, 160, static_cast<std::uint8_t>(200 * env));
+        const sf::Color white(255, 255, 255, static_cast<std::uint8_t>(255 * env));
+        diamond(L, L * 0.09f, 0.f, gold);
+        diamond(L, L * 0.09f, Pi * 0.5f, gold);
+        diamond(L * 0.45f, L * 0.06f, Pi * 0.25f, gold);
+        diamond(L * 0.45f, L * 0.06f, -Pi * 0.25f, gold);
+        diamond(L * 0.22f, L * 0.22f, 0.f, white);
+    }
+    m_rageGlints.erase(std::remove_if(m_rageGlints.begin(), m_rageGlints.end(), [](const RageGlint& g) { return g.age > g.life; }),
+                       m_rageGlints.end());
+    m_scene.draw(glints, sf::RenderStates(sf::BlendAdd));
+
+    // ---- Drop words ----
+    m_rageWordLife = std::max(0.f, m_rageWordLife - dt);
+    m_rageWordCooldown -= dt;
+    if (cfg("rage.words") > 0.5f && m_rageWordCooldown <= 0.f && ((bigKick && uni(m_rng) < 0.5f) || (kick && m_rageWordCooldown < -4.f)))
+    {
+        const std::string w = RageWords[static_cast<int>(uni(m_rng) * RageWordCount) % RageWordCount];
+        m_rageWord = sf::String::fromUtf8(w.begin(), w.end());
+        m_rageWordMax = m_rageWordLife = 0.5f + 0.45f * uni(m_rng);
+        m_rageWordCooldown = 2.f + 3.f * uni(m_rng);
+    }
+    const sf::Font* bold = m_hasBold ? &m_boldFont : m_font;
+    if (m_rageWordLife > 0.f && bold)
+    {
+        const float age = m_rageWordMax - m_rageWordLife;
+        const float punch = 1.f + 0.35f * std::exp(-age * 18.f);
+        const float fade = std::min(1.f, m_rageWordLife / 0.12f);
+        sf::Text t(*bold, m_rageWord, static_cast<unsigned>(unit * 0.2f));
+        const sf::FloatRect b = t.getLocalBounds();
+        t.setOrigin(b.position + b.size * 0.5f);
+        const float fit = std::min(1.f, m_size.x * 0.85f / std::max(1.f, b.size.x));
+        const sf::Vector2f center = m_size * 0.5f + sf::Vector2f{0.f, -m_size.y * 0.06f};
+        // Smeared red copies behind it, jittering every frame.
+        for (int i = 0; i < 3; ++i)
+        {
+            sf::Text r = t;
+            r.setFillColor(sf::Color(255, 20, 10, static_cast<std::uint8_t>(150 * fade)));
+            r.setPosition(center + sf::Vector2f{(uni(m_rng) - 0.5f) * unit * 0.04f, (uni(m_rng) - 0.5f) * unit * 0.02f});
+            r.setScale(sf::Vector2f{1.f + 0.08f * static_cast<float>(i), 1.25f + 0.1f * static_cast<float>(i)} * punch * fit);
+            m_scene.draw(r, sf::RenderStates(sf::BlendAdd));
+        }
+        t.setFillColor(sf::Color(255, 250, 245, static_cast<std::uint8_t>(255 * fade)));
+        t.setOutlineColor(sf::Color(0, 0, 0, static_cast<std::uint8_t>(220 * fade)));
+        t.setOutlineThickness(unit * 0.004f);
+        t.setPosition(center + m_rageShake * unit * 2.f);
+        t.setScale(sf::Vector2f{1.f, 1.25f} * punch * fit);
+        m_scene.draw(t);
+    }
+}
+
+void Renderer::drawDystopia(const Spectrum& spectrum, float dt)
+{
+    loadHijackFonts();
+    std::uniform_real_distribution<float> uni(0.f, 1.f);
+    const float quality = cfg("dys.quality");
+    const float scale = std::min(1.f, std::sqrt(600000.f * quality * quality / (m_size.x * m_size.y)));
+    const sf::Vector2u want{std::max(1u, static_cast<unsigned>(m_size.x * scale)),
+                            std::max(1u, static_cast<unsigned>(m_size.y * scale))};
+    if (m_dysTarget.getSize() != want && m_dysTarget.resize(want))
+        m_dysTarget.setSmooth(true);
+
+    const float beat = spectrum.beat();
+    const float lastBeat = m_dysLastBeat;
+    m_dysLastBeat = beat;
+    const bool kick = beat > 0.35f && lastBeat <= 0.35f;
+    const bool hugeKick = beat > 0.8f && lastBeat <= 0.8f;
+    const float flashAmount = cfg("dys.flash");
+
+    // A slow, heavy glide that surges with the bass.
+    m_dysBass += (spectrum.bass() - m_dysBass) * (1.f - std::exp(-3.f * dt));
+    m_dysTravel += dt * cfg("dys.speed") * (9.f + 16.f * m_dysBass);
+    // Rooftop lights all flash together on kicks; the whole city flashes red on the biggest hits.
+    m_dysBlink *= std::exp(-7.f * dt);
+    if (kick)
+        m_dysBlink = 1.f;
+    m_dysFlash *= std::exp(-6.f * dt);
+    if (hugeKick && uni(m_rng) < 0.7f * flashAmount)
+        m_dysFlash = std::min(1.f, flashAmount);
+    m_dysKickAge += dt;
+    if (kick)
+        m_dysKickAge = 0.f;
+
+    const sf::Vector2f size(m_dysTarget.getSize());
+    m_dystopia.setUniform("resolution", sf::Glsl::Vec2{size.x, size.y});
+    m_dystopia.setUniform("time", m_time);
+    m_dystopia.setUniform("travel", m_dysTravel);
+    m_dystopia.setUniform("bass", m_dysBass);
+    m_dystopia.setUniform("beat", beat);
+    m_dystopia.setUniform("energy", spectrum.energy());
+    m_dystopia.setUniform("blink", m_dysBlink);
+    m_dystopia.setUniform("flash", m_dysFlash);
+    // Color scheme.
+    {
+        auto vec = [](float r, float g, float b) { return sf::Glsl::Vec3{r, g, b}; };
+        auto fromColor = [](sf::Color c) { return sf::Glsl::Vec3{c.r / 255.f, c.g / 255.f, c.b / 255.f}; };
+        sf::Glsl::Vec3 main = vec(0.25f, 1.f, 0.4f), alt = vec(0.2f, 0.85f, 1.f), warn = vec(1.f, 0.08f, 0.05f);
+        float smogK = 0.5f;
+        switch (static_cast<int>(std::lround(cfg("dys.colors"))))
+        {
+            case 1:   // drifts through green, cyan and purple, and jumps on the biggest hits
+                if (hugeKick)
+                    m_dysHue += 0.17f + 0.2f * uni(m_rng);
+                m_dysHue += dt * 0.012f;
+                main = fromColor(hsv(0.36f + 0.22f * std::sin(m_dysHue * 6.2832f), 0.85f, 1.f));
+                alt = fromColor(hsv(0.36f + 0.22f * std::sin(m_dysHue * 6.2832f) + 0.25f, 0.7f, 1.f));
+                smogK = 0.55f;
+                break;
+            case 2:
+                main = vec(0.1f, 0.85f, 1.f);
+                alt = vec(1.f, 0.2f, 0.75f);
+                smogK = 0.6f;
+                break;
+            case 3:
+                main = vec(1.f, 0.06f, 0.03f);
+                alt = vec(0.8f, 0.88f, 1.f);
+                warn = vec(1.f, 0.06f, 0.03f);
+                smogK = 1.f;
+                break;
+            default:
+                break;
+        }
+        m_dysMain = sf::Color(static_cast<std::uint8_t>(main.x * 255.f), static_cast<std::uint8_t>(main.y * 255.f),
+                              static_cast<std::uint8_t>(main.z * 255.f));
+        m_dystopia.setUniform("mainCol", main);
+        m_dystopia.setUniform("altCol", alt);
+        m_dystopia.setUniform("warnCol", warn);
+        m_dystopia.setUniform("smogK", smogK);
+    }
+    m_dystopia.setUniform("lights", cfg("dys.lights"));
+    m_dystopia.setUniform("fogAmount", cfg("dys.fog"));
+    m_dystopia.setUniform("screens", cfg("dys.screens"));
+    m_dystopia.setUniform("sway", sf::Glsl::Vec2{2.2f * std::sin(m_time * 0.11f) + 0.8f * std::sin(m_time * 0.29f),
+                                                 2.5f * std::sin(m_time * 0.07f + 1.f)});
+    m_dystopia.setUniform("kickAge", m_dysKickAge);
+    m_dystopia.setUniform("audio", m_audioTexture);
+    m_dystopia.setUniform("hasImage", m_hasImage ? 1.f : 0.f);
+    if (m_hasImage)
+    {
+        const sf::Vector2f is(m_image.getSize());
+        m_dystopia.setUniform("image", m_image);
+        m_dystopia.setUniform("imageAspect", is.x / std::max(is.y, 1.f));
+    }
+    m_dysTarget.clear(sf::Color::Black);
+    m_dysTarget.draw(sf::RectangleShape(size), sf::RenderStates(&m_dystopia));
+    m_dysTarget.display();
+    sf::Sprite frame(m_dysTarget.getTexture());
+    frame.setScale({m_size.x / size.x, m_size.y / size.y});
+    m_scene.draw(frame);
+
+    // ---- Surveillance HUD: thin corner brackets and cold status text ----
+    const sf::Font* mono = m_hasMono ? &m_monoFont : m_font;
+    if (cfg("dys.hud") < 0.5f || !mono)
+        return;
+    const float unit = std::min(m_size.x, m_size.y);
+    const sf::Color cold(215, 225, 240, 150);
+    const sf::Color red(255, 40, 30, 200);
+    sf::VertexArray lines(sf::PrimitiveType::Triangles);
+    const float m = unit * 0.045f, len = unit * 0.07f, th = std::max(1.f, unit * 0.0022f);
+    auto bar = [&](float x0, float y0, float x1, float y1, sf::Color c) { rect(lines, x0, y0, x1, y1, c, c); };
+    const float X0 = m, Y0 = m, X1 = m_size.x - m, Y1 = m_size.y - m;
+    bar(X0, Y0, X0 + len, Y0 + th, cold); bar(X0, Y0, X0 + th, Y0 + len, cold);
+    bar(X1 - len, Y0, X1, Y0 + th, cold); bar(X1 - th, Y0, X1, Y0 + len, cold);
+    bar(X0, Y1 - th, X0 + len, Y1, cold); bar(X0, Y1 - len, X0 + th, Y1, cold);
+    bar(X1 - len, Y1 - th, X1, Y1, cold); bar(X1 - th, Y1 - len, X1, Y1, cold);
+    // Signal meter.
+    const float energy = std::clamp(spectrum.energy() * 1.6f, 0.f, 1.f);
+    const float mw = unit * 0.22f, mh = unit * 0.01f, mx = X1 - mw - unit * 0.02f, my = Y0 + unit * 0.07f;
+    bar(mx, my, mx + mw, my + mh, sf::Color(215, 225, 240, 40));
+    bar(mx, my, mx + mw * energy, my + mh, sf::Color(m_dysMain.r, m_dysMain.g, m_dysMain.b, 210));
+    m_scene.draw(lines);
+
+    const float fs = std::max(10.f, unit * 0.019f);
+    auto text = [&](const std::string& s, float x, float y, sf::Color c, bool alignRight)
+    {
+        sf::Text t(*mono, s, static_cast<unsigned>(fs));
+        t.setFillColor(c);
+        const sf::FloatRect b = t.getLocalBounds();
+        t.setPosition({std::round(alignRight ? x - b.size.x - b.position.x : x), std::round(y)});
+        m_scene.draw(t);
+    };
+    const bool dot = std::fmod(m_time, 1.2f) < 0.7f;
+    const float tx = X0 + unit * 0.02f, ty = Y0 + unit * 0.02f;
+    text("SECTOR 09 // NIGHT CYCLE", tx, ty, cold, false);
+    text("CURFEW IN EFFECT", tx, ty + fs * 1.5f, red, false);
+    text(std::string(dot ? "(o) " : "    ") + "MONITORED", X1 - unit * 0.02f, ty, red, true);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "SIGNAL %03d", static_cast<int>(energy * 999.f));
+    text(buf, X1 - unit * 0.02f, my + mh + fs * 0.5f, cold, true);
+    std::snprintf(buf, sizeof(buf), "AIR QUALITY  CRITICAL      COMPLIANCE %.1f%%", 97.f + 2.9f * std::fabs(std::sin(m_time * 0.37f)));
+    text(buf, tx, Y1 - unit * 0.02f - fs * 1.4f, cold, false);
+    std::snprintf(buf, sizeof(buf), "ALT %04dM  //  GRID %05d", 340 + static_cast<int>(25.f * std::sin(m_time * 0.07f)),
+                  static_cast<int>(m_dysTravel * 0.5f) % 100000);
+    text(buf, X1 - unit * 0.02f, Y1 - unit * 0.02f - fs * 1.4f, cold, true);
 }
 
 void Renderer::drawNightDrive(const Spectrum& spectrum, float dt, const UiState& ui)
@@ -4069,7 +5852,7 @@ void Renderer::drawOverlay(sf::RenderTarget& target, const UiState& ui, Mode mod
     target.draw(total);
 
     // Controls hint.
-    sf::Text help = makeText(U"Space play/pause   ← → seek   ↑ ↓ volume   M / 0-9 / - mode   S settings   G filter   A aspect   E export   N/P next/prev   O open   I image   F11 fullscreen",
+    sf::Text help = makeText(U"Space play/pause   ← → seek   ↑ ↓ volume   M / 0-9 / - = [ ] mode   S settings   G filter   A aspect   E export   N/P next/prev   O open   I image   F11 fullscreen",
                              13, withAlpha(sf::Color(140, 150, 180), a * 0.9f));
     const float helpWidth = help.getLocalBounds().size.x;
     if (helpWidth > m_size.x - 40.f) // narrow canvases (like 9:16) get a smaller hint line

@@ -16,6 +16,7 @@ struct SettingInfo
     float defaultValue;
     bool isToggle = false;   // on/off instead of a slider
     bool isInteger = false;  // whole numbers only (counts)
+    const char* const* choices = nullptr;  // names shown instead of numbers (integer settings)
 };
 
 struct SettingSection

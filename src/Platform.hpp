@@ -33,6 +33,8 @@ void maximizeWindow(sf::WindowHandle window);
 [[nodiscard]] std::vector<std::filesystem::path> takeDroppedFiles();
 
 [[nodiscard]] std::vector<std::filesystem::path> fontCandidates();
+[[nodiscard]] std::vector<std::filesystem::path> monoFontCandidates();   // terminal-style text
+[[nodiscard]] std::vector<std::filesystem::path> boldFontCandidates();   // chunky headline text
 
 // Where the settings file lives (%APPDATA%\Bxsim\settings.txt on Windows).
 [[nodiscard]] std::filesystem::path settingsFile();

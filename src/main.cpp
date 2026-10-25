@@ -623,6 +623,18 @@ int main(int argc, char** argv)
                         mode = Mode::DarkForest;
                         app.toast(sf::String(modeName(mode)));
                         break;
+                    case K::Equal:
+                        mode = Mode::Hijack;
+                        app.toast(sf::String(modeName(mode)));
+                        break;
+                    case K::LBracket:
+                        mode = Mode::Rage;
+                        app.toast(sf::String(modeName(mode)));
+                        break;
+                    case K::RBracket:
+                        mode = Mode::Dystopia;
+                        app.toast(sf::String(modeName(mode)));
+                        break;
                     case K::Num0:
                         mode = Mode::NightDrive;
                         app.toast(sf::String(modeName(mode)));

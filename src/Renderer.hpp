@@ -23,6 +23,9 @@ enum class Mode
     Pop,
     NightDrive,
     DarkForest,
+    Hijack,
+    Rage,
+    Dystopia,
     Count
 };
 
@@ -97,6 +100,10 @@ private:
     void drawPop(const Spectrum& spectrum, float dt);
     void drawNightDrive(const Spectrum& spectrum, float dt, const UiState& ui);
     void drawDarkForest(const Spectrum& spectrum, float dt);
+    void drawHijack(const Spectrum& spectrum, float dt, const UiState& ui);
+    void loadHijackFonts();
+    void drawRage(const Spectrum& spectrum, float dt);
+    void drawDystopia(const Spectrum& spectrum, float dt);
     void drawRadioText(const UiState& ui);
     void drawFeedback(const Spectrum& spectrum, Mode mode, float dt);
     void drawXYCurve(sf::VertexArray& out, const Spectrum& spectrum);
@@ -226,4 +233,99 @@ private:
     float m_forestLookTimer = 0.f;
     float m_forestFlicker = 0.f;
     sf::RenderTexture m_radioText;   // the scrolling song title on the dashboard screen
+
+    // Hijack: a hacked-feed collage of popups, stickers, terminal text and glitches
+    struct HackPopup
+    {
+        int kind = 0;           // 0 message, 1 progress, 2 error, 3 signal, 4 icon, 5 picture
+        sf::Vector2f position;  // top-left
+        sf::Vector2f size;
+        float age = 0.f;
+        float life = 2.f;
+        float progress = 0.f;
+        float speed = 0.5f;
+        int icon = 0;
+        int text = 0;
+        sf::Color bar;
+        sf::Color shadow;
+    };
+    struct HackSticker
+    {
+        sf::Vector2f position;
+        sf::Vector2f velocity;
+        float angle = 0.f;
+        float spin = 0.f;
+        float size = 40.f;
+        float age = 0.f;
+        float life = 3.f;
+        int icon = 0;           // -1 = a cut-out of the picture
+        sf::FloatRect cut;      // picture cut-out, in texture pixels
+        sf::Color color;
+    };
+    sf::Shader m_hijackBg;
+    sf::Shader m_hijackGlitch;
+    sf::RenderTexture m_hijackLayer;
+    std::vector<HackPopup> m_hackPopups;
+    std::vector<HackSticker> m_hackStickers;
+    std::vector<std::pair<std::string, sf::Color>> m_hackLines;
+    std::string m_hackTyping;
+    sf::Color m_hackTypingColor;
+    float m_hackTyped = 0.f;
+    float m_hackLastBeat = 0.f;
+    float m_hackPopupTimer = 1.f;
+    float m_hackStickerTimer = 0.5f;
+    std::string m_hackWord;
+    float m_hackWordLife = 0.f;
+    float m_hackWordMax = 1.f;
+    sf::Vector2f m_hackWordPos;
+    float m_hackWordAngle = 0.f;
+    sf::Color m_hackWordColor;
+    float m_hackWordCooldown = 0.f;
+    float m_hackPalette = 0.f;
+    float m_hackSeed = 0.f;
+    float m_hackSeedTimer = 0.f;
+    float m_hackInvert = 0.f;
+    sf::Font m_monoFont;
+    sf::Font m_boldFont;
+    bool m_hackFontsTried = false;
+    bool m_hasMono = false;
+    bool m_hasBold = false;
+
+    // Rage: in the crowd at a rage show
+    struct RageGlint
+    {
+        sf::Vector2f position;
+        float size = 10.f;
+        float age = 0.f;
+        float life = 0.4f;
+        float angle = 0.f;
+    };
+    sf::Shader m_rage;
+    sf::RenderTexture m_rageTarget;
+    float m_rageJump = 0.f;
+    float m_rageSweep = 0.f;
+    float m_rageKickShake = 0.f;
+    sf::Vector2f m_rageShake;
+    float m_rageStrobe = 0.f;
+    float m_rageFlash = 0.f;
+    float m_rageLastBeat = 0.f;
+    float m_rageTrebleAvg = 0.f;
+    float m_rageGlintAcc = 0.f;
+    std::vector<RageGlint> m_rageGlints;
+    sf::String m_rageWord;
+    float m_rageWordLife = 0.f;
+    float m_rageWordMax = 1.f;
+    float m_rageWordCooldown = 0.f;
+
+    // Dystopia: megacity canyon in red smog
+    sf::Shader m_dystopia;
+    sf::RenderTexture m_dysTarget;
+    float m_dysTravel = 0.f;
+    float m_dysBass = 0.f;
+    float m_dysBlink = 0.f;
+    float m_dysFlash = 0.f;
+    float m_dysKickAge = 10.f;
+    float m_dysLastBeat = 0.f;
+    float m_dysHue = 0.f;
+    sf::Color m_dysMain;
 };

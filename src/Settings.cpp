@@ -6,6 +6,11 @@
 #include <sstream>
 #include <system_error>
 
+namespace
+{
+const char* const DystopiaColors[] = {"Toxic green", "Neon shift", "Cyber", "Red"};
+}
+
 Settings::Settings()
 {
     // {key, label, min, max, default, toggle, integer}
@@ -116,6 +121,39 @@ Settings::Settings()
              {"forest.static", "Static", 0.f, 2.f, 1.f},
              {"forest.trees", "Tree density", 0.2f, 1.f, 0.75f},
              {"forest.pages", "Pages", 0.f, 1.f, 1.f, true},
+         }},
+        {"Hijack",
+         {
+             {"hijack.glitch", "Glitch", 0.f, 2.f, 1.f},
+             {"hijack.popups", "Popups", 0.f, 3.f, 1.f},
+             {"hijack.stickers", "Stickers", 0.f, 3.f, 1.f},
+             {"hijack.dots", "Halftone size", 0.4f, 2.5f, 1.f},
+             {"hijack.words", "Big words", 0.f, 1.f, 1.f, true},
+             {"hijack.terminal", "Terminal", 0.f, 1.f, 1.f, true},
+             {"hijack.bars", "Spectrum blocks", 0.f, 1.f, 1.f, true},
+         }},
+        {"Rage",
+         {
+             {"rage.quality", "Render quality", 0.5f, 1.6f, 1.f},
+             {"rage.strobe", "Strobes", 0.f, 2.f, 1.f},
+             {"rage.shake", "Camera shake", 0.f, 2.f, 1.f},
+             {"rage.beams", "Light beams", 2.f, 14.f, 8.f, false, true},
+             {"rage.crowd", "Crowd", 0.3f, 1.5f, 1.f},
+             {"rage.faces", "Glowing faces", 0.f, 1.f, 1.f, true},
+             {"rage.bells", "Bell sparkles", 0.f, 3.f, 1.f},
+             {"rage.grain", "Grain", 0.f, 2.f, 1.f},
+             {"rage.words", "Drop words", 0.f, 1.f, 1.f, true},
+         }},
+        {"Dystopia",
+         {
+             {"dys.speed", "Fly speed", 0.f, 3.f, 1.f},
+             {"dys.quality", "Render quality", 0.5f, 1.6f, 1.f},
+             {"dys.colors", "Colors", 0.f, 3.f, 0.f, false, true, DystopiaColors},
+             {"dys.lights", "Window lights", 0.f, 2.5f, 1.f},
+             {"dys.fog", "Smog", 0.3f, 2.5f, 1.f},
+             {"dys.flash", "Flashes", 0.f, 2.f, 1.f},
+             {"dys.screens", "Giant screens", 0.f, 1.f, 1.f, true},
+             {"dys.hud", "Surveillance HUD", 0.f, 1.f, 1.f, true},
          }},
     };
     for (const auto& section : m_sections)

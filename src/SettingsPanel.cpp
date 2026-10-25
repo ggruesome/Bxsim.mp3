@@ -19,6 +19,8 @@ std::string formatValue(const SettingInfo& info, float v)
     char buf[32];
     if (info.isToggle)
         return v > 0.5f ? "On" : "Off";
+    if (info.choices)
+        return info.choices[std::max(0L, std::min(std::lround(v), std::lround(info.max)) - std::lround(info.min))];
     if (info.isInteger)
         std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(std::lround(v)));
     else

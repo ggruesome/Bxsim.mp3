@@ -182,6 +182,45 @@ std::vector<fs::path> fontCandidates()
     return fonts;
 }
 
+std::vector<fs::path> monoFontCandidates()
+{
+    std::vector<fs::path> fonts;
+#ifdef _WIN32
+    fs::path dir = "C:\\Windows\\Fonts";
+    if (const char* windir = std::getenv("WINDIR"))
+        dir = fs::path(windir) / "Fonts";
+    for (const char* name : {"consolab.ttf", "consola.ttf", "lucon.ttf", "courbd.ttf", "cour.ttf"})
+        fonts.push_back(dir / name);
+#elif defined(__APPLE__)
+    fonts.emplace_back("/System/Library/Fonts/Menlo.ttc");
+    fonts.emplace_back("/System/Library/Fonts/Monaco.ttf");
+#else
+    fonts.emplace_back("/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf");
+    fonts.emplace_back("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf");
+#endif
+    return fonts;
+}
+
+std::vector<fs::path> boldFontCandidates()
+{
+    std::vector<fs::path> fonts;
+#ifdef _WIN32
+    fs::path dir = "C:\\Windows\\Fonts";
+    if (const char* windir = std::getenv("WINDIR"))
+        dir = fs::path(windir) / "Fonts";
+    for (const char* name : {"impact.ttf", "ariblk.ttf", "seguibl.ttf", "arialbd.ttf", "segoeuib.ttf"})
+        fonts.push_back(dir / name);
+#elif defined(__APPLE__)
+    fonts.emplace_back("/System/Library/Fonts/Supplemental/Impact.ttf");
+    fonts.emplace_back("/System/Library/Fonts/Supplemental/Arial Black.ttf");
+#else
+    fonts.emplace_back("/usr/share/fonts/truetype/google-fonts/Poppins-Black.ttf");
+    fonts.emplace_back("/usr/share/fonts/truetype/google-fonts/Poppins-Bold.ttf");
+    fonts.emplace_back("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf");
+#endif
+    return fonts;
+}
+
 fs::path settingsFile()
 {
 #ifdef _WIN32
